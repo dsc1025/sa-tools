@@ -7,15 +7,17 @@ import struct
 import tkinter as tk
 import zlib
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 from export_sprite_preview import actions, sprite_range
+from client_data import resources
 from sa_resource import palette, read_image
 
 
 ROOT = Path(r"C:\Work\SA\SA2.5")
 DATA = ROOT / "stoneage2.5" / "data"
-CANVAS_SIZE = 240
+CANVAS_WIDTH = 780
+CANVAS_HEIGHT = 480
 
 
 def png_bytes(width: int, height: int, rgba: bytes) -> bytes:
@@ -28,8 +30,10 @@ def png_bytes(width: int, height: int, rgba: bytes) -> bytes:
 class Viewer(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Stone Age 2.5 Resource Viewer")
+        self.title("Stone Age Resource Viewer")
+        self.geometry("800x600")
         self.resizable(False, False)
+        self.data_var = tk.StringVar(value="")
         self.sprite_var = tk.StringVar(value="100250")
         self.direction_var = tk.StringVar(value="1")
         self.action_var = tk.StringVar(value="0")
@@ -38,26 +42,30 @@ class Viewer(tk.Tk):
         self.playing = False
         self.play_job: str | None = None
         self.sprite_actions: list[dict] = []
+        self.files: dict[str, Path] = {}
         self.palette_cache: dict[int, list[tuple[int, int, int]]] = {}
         self.photo: tk.PhotoImage | None = None
         controls = ttk.Frame(self, padding=8)
         controls.grid(row=0, column=0, sticky="ew")
-        ttk.Label(controls, text="形象编号").grid(row=0, column=0)
-        ttk.Entry(controls, textvariable=self.sprite_var, width=12).grid(row=0, column=1, padx=(3, 8))
-        ttk.Button(controls, text="读取", command=self.load_sprite).grid(row=0, column=2)
-        ttk.Label(controls, text="方向").grid(row=0, column=3, padx=(12, 0))
+        ttk.Label(controls, text="客户端 data 目录").grid(row=0, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.data_var, width=58).grid(row=0, column=1, columnspan=6, padx=(5, 3), sticky="ew")
+        ttk.Button(controls, text="选择目录", command=self.choose_data).grid(row=0, column=7, columnspan=2, sticky="e")
+        ttk.Label(controls, text="形象编号").grid(row=1, column=0)
+        ttk.Entry(controls, textvariable=self.sprite_var, width=12).grid(row=1, column=1, padx=(3, 8))
+        ttk.Button(controls, text="读取", command=self.load_sprite).grid(row=1, column=2)
+        ttk.Label(controls, text="方向").grid(row=1, column=3, padx=(12, 0))
         self.direction = ttk.Combobox(controls, textvariable=self.direction_var, width=5, state="readonly")
-        self.direction.grid(row=0, column=4, padx=3)
+        self.direction.grid(row=1, column=4, padx=3)
         self.direction.bind("<<ComboboxSelected>>", lambda _event: self.refresh_action_choices())
-        ttk.Label(controls, text="调色板").grid(row=0, column=5, padx=(8, 0))
+        ttk.Label(controls, text="调色板").grid(row=1, column=5, padx=(8, 0))
         palette_box = ttk.Combobox(controls, textvariable=self.palette_var, values=[str(i) for i in range(16)], width=4, state="readonly")
-        palette_box.grid(row=0, column=6, padx=3)
+        palette_box.grid(row=1, column=6, padx=3)
         palette_box.bind("<<ComboboxSelected>>", lambda _event: self.show_frame(self.frame_index))
-        ttk.Label(controls, text="动作").grid(row=0, column=7, padx=(8, 0))
+        ttk.Label(controls, text="动作").grid(row=1, column=7, padx=(8, 0))
         self.action = ttk.Combobox(controls, textvariable=self.action_var, width=5, state="readonly")
-        self.action.grid(row=0, column=8, padx=3)
+        self.action.grid(row=1, column=8, padx=3)
         self.action.bind("<<ComboboxSelected>>", lambda _event: self.show_frame(0))
-        self.canvas = tk.Label(self, width=CANVAS_SIZE, height=CANVAS_SIZE, bg="#3c3c3c")
+        self.canvas = tk.Canvas(self, width=CANVAS_WIDTH, height=CANVAS_HEIGHT, bg="#3c3c3c", highlightthickness=0)
         self.canvas.grid(row=1, column=0, padx=8, pady=(0, 5))
         bottom = ttk.Frame(self, padding=(8, 0, 8, 8))
         bottom.grid(row=2, column=0, sticky="ew")
@@ -65,14 +73,23 @@ class Viewer(tk.Tk):
         self.play_button.pack(side="left")
         self.status = ttk.Label(bottom, text="输入形象编号后读取")
         self.status.pack(side="left", padx=8)
-        self.load_sprite()
+        self.status.configure(text="请先选择客户端 data 目录")
+
+
+    def choose_data(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.data_var.get() or None, title="选择客户端 data 目录")
+        if selected:
+            self.data_var.set(selected)
+            self.load_sprite()
 
     def load_sprite(self) -> None:
         try:
             self.stop()
             number = int(self.sprite_var.get())
-            start, end = sprite_range(DATA / "spradrn_5.bin", DATA / "spr_4.bin", number)
-            self.sprite_actions = actions(DATA / "spr_4.bin", start, end)
+            self.files = resources(Path(self.data_var.get()))
+            self.palette_cache.clear()
+            start, end = sprite_range(self.files["spradrn"], self.files["spr"], number)
+            self.sprite_actions = actions(self.files["spr"], start, end)
             directions = sorted({str(item["direction"]) for item in self.sprite_actions}, key=int)
             self.direction["values"] = directions
             self.direction_var.set("1" if "1" in directions else directions[0])
@@ -97,23 +114,24 @@ class Viewer(tk.Tk):
             frames = action["frames"]
             self.frame_index = requested % len(frames)
             frame = frames[self.frame_index]
-            info, pixels = read_image(DATA / "adrn_15.bin", DATA / "real_15.bin", frame["bitmap"])
+            info, pixels = read_image(self.files["adrn"], self.files["real"], frame["bitmap"])
             palette_number = int(self.palette_var.get())
-            colours = self.palette_cache.setdefault(palette_number, palette(DATA / "pal" / f"Palet_{palette_number}.sap"))
-            rgba = bytearray([60, 60, 60, 255] * CANVAS_SIZE * CANVAS_SIZE)
+            colours = self.palette_cache.setdefault(palette_number, palette(Path(self.data_var.get()) / "pal" / f"Palet_{palette_number}.sap"))
+            rgba = bytearray([60, 60, 60, 255] * CANVAS_WIDTH * CANVAS_HEIGHT)
             # Centre the sprite reference point; ADRN and SPR offsets place the frame.
-            left = CANVAS_SIZE // 2 + info.x + frame["x"]
-            top = CANVAS_SIZE // 2 + info.y + frame["y"]
+            left = CANVAS_WIDTH // 2 + info.x + frame["x"]
+            top = CANVAS_HEIGHT // 2 + info.y + frame["y"]
             for source_y in range(info.height):
                 for source_x in range(info.width):
                     colour_index = pixels[(info.height - 1 - source_y) * info.width + source_x]
                     x, y = left + source_x, top + source_y
-                    if colour_index != 253 and 0 <= x < CANVAS_SIZE and 0 <= y < CANVAS_SIZE:
+                    if colour_index != 253 and 0 <= x < CANVAS_WIDTH and 0 <= y < CANVAS_HEIGHT:
                         red, green, blue = colours[colour_index]
-                        at = (y * CANVAS_SIZE + x) * 4
+                        at = (y * CANVAS_WIDTH + x) * 4
                         rgba[at:at + 4] = bytes((red, green, blue, 255))
-            self.photo = tk.PhotoImage(data=base64.b64encode(png_bytes(CANVAS_SIZE, CANVAS_SIZE, bytes(rgba))))
-            self.canvas.configure(image=self.photo)
+            self.photo = tk.PhotoImage(data=base64.b64encode(png_bytes(CANVAS_WIDTH, CANVAS_HEIGHT, bytes(rgba))))
+            self.canvas.delete("all")
+            self.canvas.create_image(CANVAS_WIDTH // 2, CANVAS_HEIGHT // 2, image=self.photo)
             self.status.configure(text=f"帧 {self.frame_index + 1}/{len(frames)} | 图片 {info.number} | {info.width}×{info.height} | 调色板 {palette_number} | 声音 {frame['sound']}")
         except Exception as error:
             self.status.configure(text=f"预览失败：{error}")

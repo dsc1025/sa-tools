@@ -11,6 +11,7 @@ import json
 import struct
 from pathlib import Path
 
+from client_data import resources
 from sa_resource import palette, png_rgba, read_image
 
 
@@ -57,15 +58,16 @@ def main() -> None:
     args = parser.parse_args()
 
     output = args.output or (Path(__file__).parent / "exports" / f"sprite_{args.sprite}" / f"dir_{args.direction}_action_{args.action}")
-    start, end = sprite_range(args.data / "spradrn_5.bin", args.data / "spr_4.bin", args.sprite)
-    selected = next((item for item in actions(args.data / "spr_4.bin", start, end) if item["direction"] == args.direction and item["action"] == args.action), None)
+    files = resources(args.data)
+    start, end = sprite_range(files["spradrn"], files["spr"], args.sprite)
+    selected = next((item for item in actions(files["spr"], start, end) if item["direction"] == args.direction and item["action"] == args.action), None)
     if selected is None:
         raise ValueError("That direction/action combination is not present for this sprite")
     output.mkdir(parents=True, exist_ok=True)
     palettes: dict[int, list[tuple[int, int, int]]] = {}
     manifest = {"sprite": args.sprite, "direction": args.direction, "action": args.action, "palette": args.palette, "duration": selected["duration"], "frames": []}
     for index, frame in enumerate(selected["frames"]):
-        info, pixels = read_image(args.data / "adrn_15.bin", args.data / "real_15.bin", frame["bitmap"])
+        info, pixels = read_image(files["adrn"], files["real"], frame["bitmap"])
         colours = palettes.setdefault(args.palette, palette(args.data / "pal" / f"Palet_{args.palette}.sap"))
         filename = f"frame_{index:02d}_bitmap_{info.number}.png"
         png_rgba(output / filename, info.width, info.height, pixels, colours)
