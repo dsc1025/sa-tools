@@ -1,2 +1,4 @@
 .DS_Store
 resource-list
+__pycache__
+exports
