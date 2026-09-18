@@ -24,7 +24,19 @@ def sprite_range(index_path: Path, sprite_path: Path, image_number: int) -> tupl
     records = list(struct.iter_unpack("<III", raw))
     for index, (number, offset, _meta) in enumerate(records):
         if number == image_number:
-            end = records[index + 1][1] if index + 1 < len(records) else sprite_path.stat().st_size
+            # Index entries may point to appended replacement blocks.  Read
+            # the declared animation count instead of assuming offset order.
+            end = offset
+            with sprite_path.open("rb") as file:
+                for _ in range(_meta & 0xFFFF):
+                    file.seek(end)
+                    header = file.read(12)
+                    if len(header) != 12:
+                        raise ValueError("动画头不完整")
+                    count = struct.unpack_from("<I", header, 8)[0]
+                    end += 12 + count * 10
+                    if end > sprite_path.stat().st_size:
+                        raise ValueError("动画帧超出文件边界")
             return offset, end
     raise ValueError(f"Sprite {image_number} does not exist in {index_path.name}")
 

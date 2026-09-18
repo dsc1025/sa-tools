@@ -7,11 +7,13 @@ import struct
 import tkinter as tk
 import zlib
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from export_sprite_preview import actions, sprite_range
 from client_data import resources
 from sa_resource import palette, read_image
+from spr_importer import filename_image_number, import_package, sprite_exists
+from spr_package import export_package
 
 
 ROOT = Path(r"C:\Work\SA\SA2.5")
@@ -71,6 +73,8 @@ class Viewer(tk.Tk):
         bottom.grid(row=2, column=0, sticky="ew")
         self.play_button = ttk.Button(bottom, text="播放", command=self.toggle_play)
         self.play_button.pack(side="left")
+        ttk.Button(bottom, text="导出 .spr", command=self.export_spr).pack(side="left", padx=(10, 3))
+        ttk.Button(bottom, text="导入 .spr", command=self.import_spr).pack(side="left")
         self.status = ttk.Label(bottom, text="输入形象编号后读取")
         self.status.pack(side="left", padx=8)
         self.status.configure(text="请先选择客户端 data 目录")
@@ -86,6 +90,7 @@ class Viewer(tk.Tk):
         try:
             self.stop()
             number = int(self.sprite_var.get())
+            self.sprite_var.set(str(number))
             self.files = resources(Path(self.data_var.get()))
             self.palette_cache.clear()
             start, end = sprite_range(self.files["spradrn"], self.files["spr"], number)
@@ -136,6 +141,52 @@ class Viewer(tk.Tk):
         except Exception as error:
             self.status.configure(text=f"预览失败：{error}")
 
+
+    def export_spr(self) -> None:
+        try:
+            if not self.files:
+                raise ValueError("请先选择客户端 data 目录并读取形象")
+            sprite_number = int(self.sprite_var.get().strip())
+            self.sprite_var.set(str(sprite_number))
+            directory = filedialog.askdirectory(title="选择 .spr 导出目录")
+            if not directory:
+                return
+            target = Path(directory) / f"{sprite_number}.spr"
+            if target.exists() and not messagebox.askyesno("文件已存在", f"{target.name} 已存在，是否覆盖？"):
+                return
+            export_package(Path(self.data_var.get()), sprite_number, target)
+            self.status.configure(text=f"导出成功：{target}")
+            messagebox.showinfo("导出成功", f"已导出单个资源包：\n{target}")
+        except Exception as error:
+            self.status.configure(text=f"导出失败：{error}")
+            messagebox.showerror("导出失败", str(error))
+
+    def import_spr(self) -> None:
+        try:
+            if not self.data_var.get():
+                raise ValueError("请先选择目标客户端 data 目录")
+            source = filedialog.askopenfilename(title="导入单个资源 .spr", filetypes=[("Stone Age sprite package", "*.spr")])
+            if not source:
+                return
+            number = filename_image_number(Path(source))
+            target_data = Path(self.data_var.get())
+            overwrite = sprite_exists(target_data, number)
+            if overwrite:
+                if not messagebox.askyesno("形象编号重复", f"目标客户端已有形象编号 {number}。是否覆盖？"):
+                    self.status.configure(text="已取消导入，未修改资源")
+                    return
+            result = import_package(Path(source), target_data, overwrite=overwrite)
+            if result["status"] == "already_present":
+                self.status.configure(text="导入完成：资源已存在，无需写入")
+                messagebox.showinfo("无需导入", result["message"])
+            else:
+                self.status.configure(text=f"导入成功：形象 {result['source_sprite']} → {result['target_sprite']}")
+                messagebox.showinfo("导入成功", f"原形象编号：{result['source_sprite']}\n新形象编号：{result['target_sprite']}\n新增图片帧：{result['frames_added']}\n复用图片帧：{result['frames_reused']}\n\n请在服务端使用新形象编号。")
+                self.sprite_var.set(str(result["target_sprite"]))
+                self.load_sprite()
+        except Exception as error:
+            self.status.configure(text=f"导入失败：{error}")
+            messagebox.showerror("导入失败", str(error))
 
     def toggle_play(self) -> None:
         if self.playing:
