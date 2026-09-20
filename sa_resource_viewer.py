@@ -2,6 +2,7 @@
 """Small read-only visual inspector for Stone Age 2.5 sprite resources."""
 from __future__ import annotations
 
+import argparse
 import base64
 import struct
 import tkinter as tk
@@ -30,7 +31,7 @@ def png_bytes(width: int, height: int, rgba: bytes) -> bytes:
 
 
 class Viewer(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, data_dir: Path | None = None, sprite_number: int | None = None) -> None:
         super().__init__()
         self.title("Stone Age Resource Viewer")
         self.geometry("800x600")
@@ -39,19 +40,18 @@ class Viewer(tk.Tk):
         self.sprite_var = tk.StringVar(value="100250")
         self.direction_var = tk.StringVar(value="1")
         self.action_var = tk.StringVar(value="0")
-        self.palette_var = tk.StringVar(value="1")
         self.frame_index = 0
         self.playing = False
         self.play_job: str | None = None
         self.sprite_actions: list[dict] = []
         self.files: dict[str, Path] = {}
-        self.palette_cache: dict[int, list[tuple[int, int, int]]] = {}
+        self.colours: list[tuple[int, int, int]] | None = None
         self.photo: tk.PhotoImage | None = None
         controls = ttk.Frame(self, padding=8)
         controls.grid(row=0, column=0, sticky="ew")
         ttk.Label(controls, text="客户端 data 目录").grid(row=0, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.data_var, width=58).grid(row=0, column=1, columnspan=6, padx=(5, 3), sticky="ew")
-        ttk.Button(controls, text="选择目录", command=self.choose_data).grid(row=0, column=7, columnspan=2, sticky="e")
+        ttk.Entry(controls, textvariable=self.data_var, width=58).grid(row=0, column=1, columnspan=5, padx=(5, 3), sticky="ew")
+        ttk.Button(controls, text="选择目录", command=self.choose_data).grid(row=0, column=6, sticky="e")
         ttk.Label(controls, text="形象编号").grid(row=1, column=0)
         ttk.Entry(controls, textvariable=self.sprite_var, width=12).grid(row=1, column=1, padx=(3, 8))
         ttk.Button(controls, text="读取", command=self.load_sprite).grid(row=1, column=2)
@@ -59,25 +59,25 @@ class Viewer(tk.Tk):
         self.direction = ttk.Combobox(controls, textvariable=self.direction_var, width=5, state="readonly")
         self.direction.grid(row=1, column=4, padx=3)
         self.direction.bind("<<ComboboxSelected>>", lambda _event: self.refresh_action_choices())
-        ttk.Label(controls, text="调色板").grid(row=1, column=5, padx=(8, 0))
-        palette_box = ttk.Combobox(controls, textvariable=self.palette_var, values=[str(i) for i in range(16)], width=4, state="readonly")
-        palette_box.grid(row=1, column=6, padx=3)
-        palette_box.bind("<<ComboboxSelected>>", lambda _event: self.show_frame(self.frame_index))
-        ttk.Label(controls, text="动作").grid(row=1, column=7, padx=(8, 0))
+        ttk.Label(controls, text="动作").grid(row=1, column=5, padx=(8, 0))
         self.action = ttk.Combobox(controls, textvariable=self.action_var, width=5, state="readonly")
-        self.action.grid(row=1, column=8, padx=3)
-        self.action.bind("<<ComboboxSelected>>", lambda _event: self.show_frame(0))
+        self.action.grid(row=1, column=6, padx=3)
+        self.action.bind("<<ComboboxSelected>>", lambda _event: self.start_animation())
         self.canvas = tk.Canvas(self, width=CANVAS_WIDTH, height=CANVAS_HEIGHT, bg="#3c3c3c", highlightthickness=0)
         self.canvas.grid(row=1, column=0, padx=8, pady=(0, 5))
         bottom = ttk.Frame(self, padding=(8, 0, 8, 8))
         bottom.grid(row=2, column=0, sticky="ew")
-        self.play_button = ttk.Button(bottom, text="播放", command=self.toggle_play)
-        self.play_button.pack(side="left")
-        ttk.Button(bottom, text="导出 .spr", command=self.export_spr).pack(side="left", padx=(10, 3))
+        ttk.Button(bottom, text="导出 .spr", command=self.export_spr).pack(side="left", padx=(0, 3))
         ttk.Button(bottom, text="导入 .spr", command=self.import_spr).pack(side="left")
         self.status = ttk.Label(bottom, text="输入形象编号后读取")
         self.status.pack(side="left", padx=8)
         self.status.configure(text="请先选择客户端 data 目录")
+        if data_dir is not None:
+            self.data_var.set(str(data_dir))
+        if sprite_number is not None:
+            self.sprite_var.set(str(sprite_number))
+        if data_dir is not None and sprite_number is not None:
+            self.after_idle(self.load_sprite)
 
 
     def choose_data(self) -> None:
@@ -91,8 +91,15 @@ class Viewer(tk.Tk):
             self.stop()
             number = int(self.sprite_var.get())
             self.sprite_var.set(str(number))
-            self.files = resources(Path(self.data_var.get()))
-            self.palette_cache.clear()
+            data_dir = Path(self.data_var.get())
+            self.files = resources(data_dir)
+            palette_path = next(
+                (path for path in (data_dir / "pal").iterdir() if path.name.lower() == "palet_1.sap"),
+                None,
+            )
+            if palette_path is None:
+                raise FileNotFoundError(f"找不到客户端调色板：{data_dir / 'pal' / 'Palet_1.sap'}")
+            self.colours = palette(palette_path)
             start, end = sprite_range(self.files["spradrn"], self.files["spr"], number)
             self.sprite_actions = actions(self.files["spr"], start, end)
             directions = sorted({str(item["direction"]) for item in self.sprite_actions}, key=int)
@@ -108,7 +115,7 @@ class Viewer(tk.Tk):
         values = sorted({str(item["action"]) for item in self.sprite_actions if item["direction"] == direction}, key=int)
         self.action["values"] = values
         self.action_var.set(values[0])
-        self.show_frame(0)
+        self.start_animation()
 
     def selected(self) -> dict:
         return next(item for item in self.sprite_actions if item["direction"] == int(self.direction_var.get()) and item["action"] == int(self.action_var.get()))
@@ -120,8 +127,8 @@ class Viewer(tk.Tk):
             self.frame_index = requested % len(frames)
             frame = frames[self.frame_index]
             info, pixels = read_image(self.files["adrn"], self.files["real"], frame["bitmap"])
-            palette_number = int(self.palette_var.get())
-            colours = self.palette_cache.setdefault(palette_number, palette(Path(self.data_var.get()) / "pal" / f"Palet_{palette_number}.sap"))
+            if self.colours is None:
+                raise ValueError("客户端调色板尚未加载")
             rgba = bytearray([60, 60, 60, 255] * CANVAS_WIDTH * CANVAS_HEIGHT)
             # Centre the sprite reference point; ADRN and SPR offsets place the frame.
             left = CANVAS_WIDTH // 2 + info.x + frame["x"]
@@ -131,13 +138,13 @@ class Viewer(tk.Tk):
                     colour_index = pixels[(info.height - 1 - source_y) * info.width + source_x]
                     x, y = left + source_x, top + source_y
                     if colour_index != 253 and 0 <= x < CANVAS_WIDTH and 0 <= y < CANVAS_HEIGHT:
-                        red, green, blue = colours[colour_index]
+                        red, green, blue = self.colours[colour_index]
                         at = (y * CANVAS_WIDTH + x) * 4
                         rgba[at:at + 4] = bytes((red, green, blue, 255))
             self.photo = tk.PhotoImage(data=base64.b64encode(png_bytes(CANVAS_WIDTH, CANVAS_HEIGHT, bytes(rgba))))
             self.canvas.delete("all")
             self.canvas.create_image(CANVAS_WIDTH // 2, CANVAS_HEIGHT // 2, image=self.photo)
-            self.status.configure(text=f"帧 {self.frame_index + 1}/{len(frames)} | 图片 {info.number} | {info.width}×{info.height} | 调色板 {palette_number} | 声音 {frame['sound']}")
+            self.status.configure(text=f"帧 {self.frame_index + 1}/{len(frames)} | 图片 {info.number} | {info.width}×{info.height} | 客户端调色板 | 声音 {frame['sound']}")
         except Exception as error:
             self.status.configure(text=f"预览失败：{error}")
 
@@ -188,18 +195,14 @@ class Viewer(tk.Tk):
             self.status.configure(text=f"导入失败：{error}")
             messagebox.showerror("导入失败", str(error))
 
-    def toggle_play(self) -> None:
-        if self.playing:
-            self.stop()
-            return
+    def start_animation(self) -> None:
+        self.stop()
         self.playing = True
-        self.play_button.configure(text="停止")
         self.frame_index = 0
         self.play_next()
 
     def stop(self) -> None:
         self.playing = False
-        self.play_button.configure(text="播放")
         if self.play_job is not None:
             self.after_cancel(self.play_job)
             self.play_job = None
@@ -215,5 +218,13 @@ class Viewer(tk.Tk):
         self.play_job = self.after(interval_ms, self.play_next)
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="View a Stone Age client sprite resource.")
+    parser.add_argument("--data-dir", type=Path)
+    parser.add_argument("--sprite", type=int)
+    args = parser.parse_args()
+    Viewer(args.data_dir, args.sprite).mainloop()
+
+
 if __name__ == "__main__":
-    Viewer().mainloop()
+    main()

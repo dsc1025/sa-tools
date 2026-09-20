@@ -66,8 +66,8 @@ def filename_image_number(package: Path) -> int:
     if package.suffix.lower() != ".spr" or not package.stem.isascii() or not package.stem.isdecimal():
         raise ValueError("资源包文件名必须是数字，例如 101819.spr")
     number = int(package.stem)
-    if not 0 <= number <= 0xFFFFFFFF:
-        raise ValueError("形象编号超出范围")
+    if not 100000 <= number <= 132767:
+        raise ValueError("此客户端的形象编号必须在 100000～132767 之间")
     return number
 
 
