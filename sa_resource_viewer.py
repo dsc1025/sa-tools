@@ -19,8 +19,8 @@ from spr_package import export_package
 
 ROOT = Path(r"C:\Work\SA\SA2.5")
 DATA = ROOT / "stoneage2.5" / "data"
-CANVAS_WIDTH = 780
-CANVAS_HEIGHT = 480
+CANVAS_WIDTH = 565
+CANVAS_HEIGHT = 390
 
 
 def png_bytes(width: int, height: int, rgba: bytes) -> bytes:
@@ -37,8 +37,8 @@ class Viewer(tk.Tk):
         self.geometry("800x600")
         self.resizable(False, False)
         self.data_var = tk.StringVar(value="")
-        self.sprite_var = tk.StringVar(value="100250")
-        self.direction_var = tk.StringVar(value="1")
+        self.sprite_var = tk.StringVar(value="")
+        self.direction_var = tk.StringVar(value="0")
         self.action_var = tk.StringVar(value="0")
         self.frame_index = 0
         self.playing = False
@@ -52,7 +52,7 @@ class Viewer(tk.Tk):
         ttk.Label(controls, text="客户端 data 目录").grid(row=0, column=0, sticky="w")
         ttk.Entry(controls, textvariable=self.data_var, width=58).grid(row=0, column=1, columnspan=5, padx=(5, 3), sticky="ew")
         ttk.Button(controls, text="选择目录", command=self.choose_data).grid(row=0, column=6, sticky="e")
-        ttk.Label(controls, text="形象编号").grid(row=1, column=0)
+        ttk.Label(controls, text="编号").grid(row=1, column=0)
         ttk.Entry(controls, textvariable=self.sprite_var, width=12).grid(row=1, column=1, padx=(3, 8))
         ttk.Button(controls, text="读取", command=self.load_sprite).grid(row=1, column=2)
         ttk.Label(controls, text="方向").grid(row=1, column=3, padx=(12, 0))
@@ -63,13 +63,28 @@ class Viewer(tk.Tk):
         self.action = ttk.Combobox(controls, textvariable=self.action_var, width=5, state="readonly")
         self.action.grid(row=1, column=6, padx=3)
         self.action.bind("<<ComboboxSelected>>", lambda _event: self.start_animation())
-        self.canvas = tk.Canvas(self, width=CANVAS_WIDTH, height=CANVAS_HEIGHT, bg="#3c3c3c", highlightthickness=0)
-        self.canvas.grid(row=1, column=0, padx=8, pady=(0, 5))
+        content = ttk.Frame(self, padding=(8, 0))
+        content.grid(row=1, column=0, sticky="nsew")
+        list_frame = ttk.Frame(content, width=195)
+        list_frame.pack(side="left", fill="y", padx=(0, 8))
+        ttk.Label(list_frame, text="形象列表").pack(anchor="w")
+        self.sprite_tree = ttk.Treeview(list_frame, columns=("id", "actions"), show="headings", selectmode="browse", height=19)
+        self.sprite_tree.heading("id", text="编号")
+        self.sprite_tree.heading("actions", text="动作")
+        self.sprite_tree.column("id", width=105, anchor="e")
+        self.sprite_tree.column("actions", width=48, anchor="e")
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.sprite_tree.yview)
+        self.sprite_tree.configure(yscrollcommand=list_scroll.set)
+        self.sprite_tree.pack(side="left", fill="y")
+        list_scroll.pack(side="right", fill="y")
+        self.sprite_tree.bind("<<TreeviewSelect>>", self.select_sprite_from_list)
+        self.canvas = tk.Canvas(content, width=CANVAS_WIDTH, height=CANVAS_HEIGHT, bg="#3c3c3c", highlightthickness=0)
+        self.canvas.pack(side="left", fill="both", expand=True)
         bottom = ttk.Frame(self, padding=(8, 0, 8, 8))
         bottom.grid(row=2, column=0, sticky="ew")
         ttk.Button(bottom, text="导出 .spr", command=self.export_spr).pack(side="left", padx=(0, 3))
         ttk.Button(bottom, text="导入 .spr", command=self.import_spr).pack(side="left")
-        self.status = ttk.Label(bottom, text="输入形象编号后读取")
+        self.status = ttk.Label(bottom, text="输入编号后读取")
         self.status.pack(side="left", padx=8)
         self.status.configure(text="请先选择客户端 data 目录")
         if data_dir is not None:
@@ -84,7 +99,25 @@ class Viewer(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.data_var.get() or None, title="选择客户端 data 目录")
         if selected:
             self.data_var.set(selected)
-            self.load_sprite()
+            self.scan_sprites()
+            if self.sprite_var.get().strip():
+                self.load_sprite()
+
+    def scan_sprites(self) -> None:
+        data_dir = Path(self.data_var.get())
+        files = resources(data_dir)
+        rows = list(struct.iter_unpack("<III", files["spradrn"].read_bytes()))
+        sprites = {number: flags & 0xFFFF for number, _offset, flags in rows}
+        self.sprite_tree.delete(*self.sprite_tree.get_children())
+        for index, (number, action_count) in enumerate(sorted(sprites.items())):
+            self.sprite_tree.insert("", "end", iid=f"row-{index}", values=(number, action_count))
+
+    def select_sprite_from_list(self, _event=None) -> None:
+        selected = self.sprite_tree.selection()
+        if not selected:
+            return
+        self.sprite_var.set(str(self.sprite_tree.item(selected[0], "values")[0]))
+        self.load_sprite()
 
     def load_sprite(self) -> None:
         try:
@@ -93,6 +126,8 @@ class Viewer(tk.Tk):
             self.sprite_var.set(str(number))
             data_dir = Path(self.data_var.get())
             self.files = resources(data_dir)
+            if not self.sprite_tree.get_children():
+                self.scan_sprites()
             palette_path = next(
                 (path for path in (data_dir / "pal").iterdir() if path.name.lower() == "palet_1.sap"),
                 None,
@@ -104,7 +139,7 @@ class Viewer(tk.Tk):
             self.sprite_actions = actions(self.files["spr"], start, end)
             directions = sorted({str(item["direction"]) for item in self.sprite_actions}, key=int)
             self.direction["values"] = directions
-            self.direction_var.set("1" if "1" in directions else directions[0])
+            self.direction_var.set("0" if "0" in directions else directions[0])
             self.refresh_action_choices()
         except Exception as error:
             self.status.configure(text=f"读取失败：{error}")

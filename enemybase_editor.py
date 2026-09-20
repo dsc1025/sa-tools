@@ -218,6 +218,35 @@ def find_references(enemybase_path: Path, template_id: str):
     return references, warnings
 
 
+def create_level_one_instance(enemy_path: Path, template_id: str, name: str) -> str:
+    """Append a level-one enemy instance and return its newly assigned ENEMY_ID."""
+    if not enemy_path.is_file():
+        raise FileNotFoundError(f'未找到实例文件：{enemy_path}')
+    enemy_doc = Document(enemy_path.read_bytes())
+    records = enemy_doc.records()
+    if not records:
+        raise ValueError('enemy.txt 没有可用记录，无法确认当前实例格式。')
+    counts = Counter(len(line.fields) for line in records)
+    field_count, frequency = counts.most_common(1)[0]
+    if field_count != 34 or frequency != len(records):
+        raise ValueError('当前 enemy.txt 不是本工具支持的 34 列实例格式。')
+    try:
+        highest_id = max(int(line.fields[3]) for line in records if line.fields[3].isdigit())
+    except ValueError as exc:
+        raise ValueError('enemy.txt 没有有效的实例编号。') from exc
+    enemy_id = str(highest_id + 1)
+    fields = [''] * 34
+    fields[:14] = [
+        name, 'at:10;1;1|gu:1|es:1|wa:0;0;0;0;0;0;0;', '', enemy_id,
+        template_id, '1', '1', '1', '1', '1', '-1', '-1', '0', '1',
+    ]
+    if enemy_doc.lines and not enemy_doc.lines[-1].ending:
+        enemy_doc.lines[-1].ending = enemy_doc.newline
+    enemy_doc.lines.append(Line('', enemy_doc.newline, 0, fields, None))
+    enemy_doc.save(enemy_path, enemy_doc.digest)
+    return enemy_id
+
+
 
 class Editor(tk.Tk):
     def __init__(self):
@@ -237,8 +266,7 @@ class Editor(tk.Tk):
         bar.pack(fill='x')
         for label, callback in [('打开文件', self.open), ('保存', self.save), ('另存为', lambda: self.save(True)),
                                 ('新增', self.add), ('复制', lambda: self.add(True)), ('删除', self.delete),
-                                ('撤销', self.undo), ('检查', self.check),
-                                ('按编号整理', self.organize), ('查看引用', self.show_references)]:
+                                ('撤销', self.undo), ('查看引用', self.show_references)]:
             ttk.Button(bar, text=label, command=callback).pack(side='left', padx=2)
         self.encoding = tk.StringVar(value='自动')
         ttk.Combobox(bar, textvariable=self.encoding, values=['自动', 'gbk', 'utf-8', 'utf-8-sig'], state='readonly', width=10).pack(side='right')
@@ -288,7 +316,10 @@ class Editor(tk.Tk):
         self.raw = tk.Text(raw_frame, wrap='word', height=12)
         self.raw.pack(fill='both', expand=True)
         self.raw.configure(state='disabled')
-        ttk.Button(right, text='应用修改', command=self.apply).pack(pady=8)
+        actions = ttk.Frame(right)
+        actions.pack(pady=8)
+        ttk.Button(actions, text='应用修改', command=self.apply).pack(side='left', padx=3)
+        ttk.Button(actions, text='新增实例', command=self.add_instance).pack(side='left', padx=3)
         self.status = ttk.Label(self, text='尚未打开文件', padding=8)
         self.status.pack(fill='x')
         self.bind('<Control-s>', lambda e: self.save())
@@ -498,6 +529,34 @@ class Editor(tk.Tk):
         text.insert('end', '\n'.join(report) if issues else '字段与编号检查通过。\n' + report[-1])
         text.configure(state='disabled')
         self.refresh()
+
+    def add_instance(self):
+        if not self.doc or self.active is None:
+            messagebox.showinfo('新增实例', '请先选择一个宠物基板。')
+            return
+        if not self.resolve_form():
+            return
+        if self.doc.bytes() != self.baseline:
+            messagebox.showinfo('新增实例', '请先保存 enemybase.txt，再为该基板新增实例。')
+            return
+        fields = self.active.fields
+        if len(fields) <= 6 or not fields[6].strip().isdigit() or not fields[0].strip():
+            messagebox.showerror('新增实例', '当前基板需要有效的名称和模板编号。')
+            return
+        enemy_path = self.path.parent / 'enemy.txt'
+        if not messagebox.askyesno(
+            '新增实例',
+            f'将向 {enemy_path.name} 新增「{fields[0]}」的实例。\n'
+            '等级固定为 1–1，实例编号自动使用当前最大编号加 1。\n'
+            '保存前会覆盖同目录的 enemy.txt.bak 备份。是否继续？',
+        ):
+            return
+        try:
+            enemy_id = create_level_one_instance(enemy_path, fields[6].strip(), fields[0].strip())
+        except Exception as exc:
+            messagebox.showerror('新增实例失败', str(exc))
+            return
+        messagebox.showinfo('新增实例完成', f'已新增 ENEMY_ID={enemy_id}，等级为 1–1。')
 
     def show_references(self):
         if not self.doc or self.active is None:

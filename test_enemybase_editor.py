@@ -3,7 +3,7 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from enemybase_editor import Document, find_references
+from enemybase_editor import Document, create_level_one_instance, find_references
 
 
 def record(number='1', name='乌力'):
@@ -86,6 +86,19 @@ class DocumentTests(unittest.TestCase):
             counts = Counter(reference.kind for reference in references)
             self.assertEqual(counts, {'实例': 1, '遇敌组': 1, '地图遇敌': 1, 'NPC数据': 2})
             self.assertFalse(warnings)
+
+    def test_create_level_one_instance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'enemy.txt'
+            old = [''] * 34
+            old[0], old[3], old[4], old[5], old[6] = '旧实例', '2000', '100', '9', '10'
+            path.write_text(','.join(old), encoding='gbk')
+            self.assertEqual(create_level_one_instance(path, '1500', '新宠物'), '2001')
+            saved = Document(path.read_bytes())
+            added = saved.records()[-1].fields
+            self.assertEqual((added[0], added[3], added[4], added[5], added[6]),
+                             ('新宠物', '2001', '1500', '1', '1'))
+            self.assertTrue(path.with_name('enemy.txt.bak').exists())
 
 
 if __name__ == '__main__':
