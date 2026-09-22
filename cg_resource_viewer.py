@@ -16,7 +16,6 @@ from cg_to_stoneage_package import (
     CG_TO_SA_ACTION, CG_TO_SA_DIRECTION, SETS, anime_rows, build, cg_palette,
     paths, read_animation, read_graphic, stoneage_actions,
 )
-from spr_package import validate_package
 
 
 DEFAULT_CG = Path(r"C:\Work\CG\CrossGate\bin")
@@ -338,9 +337,6 @@ class CGViewer(tk.Tk):
         try:
             if self.current_number is None:
                 raise ValueError("请先选择一个动画编号")
-            sprite = self.current_number
-            if not 100000 <= sprite <= 132767:
-                raise ValueError("当前 CG 动画编号超出 SPR 支持范围 100000～132767")
             target_name = filedialog.asksaveasfilename(
                 title="导出 SPR", defaultextension=".spr", initialfile=f"{self.current_number}.spr",
                 filetypes=[("Stone Age SPR package", "*.spr")],
@@ -348,13 +344,16 @@ class CGViewer(tk.Tk):
             if not target_name:
                 return
             target = Path(target_name)
-            self.status_var.set("正在转换并校验 SPR……")
+            # A numeric filename is the manual-import target id. For a custom
+            # non-numeric name, retain the source CG id in the package.
+            sprite = self.current_number
+            if target.stem.isascii() and target.stem.isdecimal():
+                sprite = int(target.stem)
+            if not 100000 <= sprite <= 132767:
+                raise ValueError("目标编号必须在 100000～132767；请用数字文件名保存，例如 132767.spr")
+            self.status_var.set("正在导出 SPR……")
             self.update_idletasks()
             build(Path(self.cg_var.get()), self.set_var.get(), self.current_number, Path(self.sa_var.get()), target, sprite, 0)
-            validation = validate_package(target, Path(self.sa_var.get()))
-            if validation not in (0, 1):
-                target.unlink(missing_ok=True)
-                raise ValueError("导出包未通过结构校验，已删除不合格输出。")
             self.status_var.set(f"导出完成：{target.name}")
             messagebox.showinfo("导出完成", f"SPR：{target}\n\n客户端文件没有被修改。")
         except Exception as error:

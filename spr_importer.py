@@ -1,10 +1,8 @@
 """Transactional importer for one custom Stone Age .spr resource package."""
 from __future__ import annotations
 
-import base64
 import json
 import struct
-import time
 import zipfile
 from pathlib import Path
 
@@ -76,6 +74,40 @@ def sprite_exists(target_data: Path, number: int) -> bool:
     return any(row[0] == number for row in struct.iter_unpack("<III", index))
 
 
+def delete_sprites(target_data: Path, numbers: list[int]) -> dict:
+    """Remove sprite index rows while preserving shared frame data.
+
+    Sprite animation and image records are append-only and may be shared by
+    other sprites. Removing only the selected spradrn rows is therefore the
+    safe reversible operation; the now-unreferenced bytes remain in the client
+    files and can be reclaimed later by a separate compaction tool.
+    """
+    files = resources(target_data)
+    requested = list(dict.fromkeys(numbers))
+    if not requested:
+        raise ValueError("没有选择要删除的形象")
+    original_index = files["spradrn"].read_bytes()
+    rows = list(struct.iter_unpack("<III", original_index))
+    existing = {row[0] for row in rows}
+    missing = [number for number in requested if number not in existing]
+    if missing:
+        raise ValueError("形象编号不存在：" + "、".join(str(number) for number in missing))
+    updated_rows = [row for row in rows if row[0] not in requested]
+    report = {
+        "status": "deleted",
+        "deleted_sprites": requested,
+        "removed_rows": len(rows) - len(updated_rows),
+        "spradrn": str(files["spradrn"]),
+        "original_size": len(original_index),
+    }
+    try:
+        files["spradrn"].write_bytes(b"".join(struct.pack("<III", *row) for row in updated_rows))
+    except Exception:
+        files["spradrn"].write_bytes(original_index)
+        raise
+    return report
+
+
 def import_package(package: Path, target_data: Path, *, overwrite: bool = False) -> dict:
     """Import a .spr resource with append-only writes and a rollback manifest."""
     manifest, source_sprite_index, source_sprite_data, frames = _package(package)
@@ -104,22 +136,17 @@ def import_package(package: Path, target_data: Path, *, overwrite: bool = False)
 
     sprite_data = _rewrite_frame_references(source_sprite_data, frame_mapping)
     original_sizes = {name: path.stat().st_size for name, path in files.items()}
-    backup_dir = target_data / ".sa_resource_backups"
-    backup_dir.mkdir(exist_ok=True)
-    backup = backup_dir / f"import_{time.time_ns()}_{target_sprite}.json"
     report = {
         "status": "imported",
         "source_sprite": source_sprite,
         "target_sprite": target_sprite,
         "overwritten": existing_sprite is not None,
-        "original_spradrn_base64": base64.b64encode(spr_index).decode("ascii"),
         "frames_added": len(new_frames),
         "frames_reused": reused,
         "original_sizes": original_sizes,
         "frame_mapping": frame_mapping,
         "package": str(package),
     }
-    backup.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         real_offset = original_sizes["real"]
         with files["real"].open("ab") as real_file, files["adrn"].open("r+b") as adrn_file:
@@ -145,5 +172,4 @@ def import_package(package: Path, target_data: Path, *, overwrite: bool = False)
                     file.seek(0)
                     file.write(spr_index)
         raise
-    report["backup"] = str(backup)
     return report

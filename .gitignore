@@ -3,3 +3,4 @@ resource-list
 __pycache__
 exports
 diagnostic_deps
+CG_SPRS

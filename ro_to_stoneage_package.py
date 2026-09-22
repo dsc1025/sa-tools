@@ -20,7 +20,7 @@ from spr_package import FORMAT, VERSION, adrn_record, read_at
 
 
 # Stone Age action meanings: attack, hurt, death, idle, move, special, guard.
-ACTION_CODES = (0, 1, 2, 3, 4, 9, 10)
+ACTION_CODES = (0, 2, 1, 10, 3, 4, 9)
 
 
 def sha(value: bytes) -> str:
@@ -123,7 +123,7 @@ def build(spr: Path, act: Path, target_data: Path, output: Path, sprite: int) ->
     # RO groups: idle, move, attack, hurt, death, special.
     # Stone actions: attack, hurt, death, idle, move, special, guard.
     # RO has no guard group, so guard safely reuses idle.
-    groups = (2, 3, 4, 0, 1, 5, 0)
+    groups = (2, 4, 3, 0, 0, 1, 5)
     for direction in range(8):
         for action_code, group in zip(ACTION_CODES, groups):
             frames = source_actions[group * 8 + direction]

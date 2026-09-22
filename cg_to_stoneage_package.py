@@ -42,6 +42,7 @@ CG_TO_SA_DIRECTION = {5: 0, 6: 1, 7: 2, 0: 3, 1: 4, 2: 5, 3: 6, 4: 7}
 # CG action 1 is a second idle variant and is used only when action 0 is absent.
 CG_TO_SA_ACTION = {5: 0, 8: 1, 10: 2, 0: 3, 1: 3, 3: 4, 6: 9, 9: 10}
 CG_ACTION_PRIORITY = {0: 0, 1: 1}
+SA_ACTION_ORDER = (0, 2, 1, 10, 3, 4, 9)
 
 
 @dataclass(frozen=True)
@@ -236,9 +237,14 @@ def stoneage_actions(source_actions: list[dict]) -> tuple[list[dict], list[dict]
         else:
             skipped.append(item)
     result = []
-    for (direction, action), (_priority, source) in sorted(selected.items()):
-        result.append({**source, "direction": direction, "action": action,
-                       "cg_direction": source["direction"], "cg_action": source["action"]})
+    for direction in range(8):
+        for action in SA_ACTION_ORDER:
+            source_row = selected.get((direction, action))
+            if source_row is None:
+                continue
+            _priority, source = source_row
+            result.append({**source, "direction": direction, "action": action,
+                           "cg_direction": source["direction"], "cg_action": source["action"]})
     return result, skipped
 
 
@@ -265,7 +271,13 @@ def build(root: Path, set_name: str, anime_number: int, target_data: Path, outpu
     real_offset = 0
     for item in source_actions:
         animation.extend(struct.pack("<HHII", item["direction"], item["action"], item["duration"], len(item["frames"])))
-        for frame in item["frames"]:
+        last_attack_event = None
+        if item["action"] == 0:
+            last_attack_event = next(
+                (index for index in range(len(item["frames"]) - 1, -1, -1) if item["frames"][index]["flag"]),
+                None,
+            )
+        for frame_index, frame in enumerate(item["frames"]):
             key = (frame["graphic"], frame["x"], frame["y"])
             bitmap = rendered.get(key)
             if bitmap is None:
@@ -276,15 +288,17 @@ def build(root: Path, set_name: str, anime_number: int, target_data: Path, outpu
                 rendered[key] = bitmap
                 next_frame += 1
                 real_offset += len(real)
-            animation.extend(struct.pack("<IhhH", bitmap, 0, 0, frame["flag"]))
+            event = 10000 if frame_index == last_attack_event else frame["flag"]
+            animation.extend(struct.pack("<IhhH", bitmap, 0, 0, event))
 
     manifest = {
         "format": FORMAT, "version": VERSION, "sprite": sprite,
         "frame_count": len(frame_records), "sprite_sha256": sha(bytes(animation)),
-        "conversion_revision": 2,
+        "conversion_revision": 4,
         "source": {"client": str(root), "set": set_name, "anime": anime_number, "palette": palette_number},
         "direction_mapping": CG_TO_SA_DIRECTION,
         "action_mapping": CG_TO_SA_ACTION,
+        "attack_event_normalization": "last non-zero CG attack event -> SA 10000",
         "selected_actions": len(source_actions),
         "skipped_actions": [{"direction": item["direction"], "action": item["action"]} for item in skipped_actions],
         "frames": [],
