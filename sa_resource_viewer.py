@@ -11,7 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from export_sprite_preview import actions, sprite_range
-from client_data import resources
+from client_data import client_data_dir as resolve_client_data_dir, resources
 from sa_resource import palette, read_image
 from spr_importer import delete_sprites, filename_image_number, import_package, sprite_exists
 from spr_package import export_package
@@ -19,7 +19,6 @@ from spr_package import export_package
 
 ROOT = Path(r"C:\Work\SA\SA2.5")
 DATA = ROOT / "stoneage2.5" / "data"
-CLIENT_DATA_RELATIVE = Path("data")
 CANVAS_WIDTH = 565
 CANVAS_HEIGHT = 390
 
@@ -112,7 +111,7 @@ class Viewer(tk.Tk):
         client_dir = self.data_var.get().strip()
         if not client_dir:
             raise ValueError("请先选择客户端目录")
-        return Path(client_dir) / CLIENT_DATA_RELATIVE
+        return resolve_client_data_dir(Path(client_dir))
 
     def scan_sprites(self) -> None:
         data_dir = self.client_data_dir()

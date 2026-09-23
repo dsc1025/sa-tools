@@ -11,11 +11,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from client_data import client_data_dir, resource_file
+
 
 ROOT = Path(r"C:\Work\SA")
 DEFAULT_ENEMYBASE = ROOT / "sa-server" / "2.5" / "gmsv" / "data" / "enemybase.txt"
-DEFAULT_25_INDEX = ROOT / "SA2.5" / "stoneage2.5" / "data" / "spradrn_5.bin"
-DEFAULT_80_INDEX = ROOT / "SA8.0" / "data" / "spradrn_115.bin"
+DEFAULT_25_CLIENT = ROOT / "SA2.5" / "stoneage2.5"
+DEFAULT_80_CLIENT = ROOT / "SA8.0"
 
 # Confirmed from the server's enemybase format: column 6 is the template ID;
 # column 36 is the client base image/animation number.
@@ -55,10 +57,14 @@ def enemybase_rows(path: Path) -> list[tuple[int, str, str, int]]:
 
 
 def comparison_rows(
-    enemybase: Path, client25_index: Path, client80_index: Path
+    enemybase: Path, client25_dir: Path, client80_dir: Path
 ) -> list[tuple[int, str, str, int, str, str]]:
-    ids_25 = sprite_ids(client25_index)
-    ids_80 = sprite_ids(client80_index)
+    data25 = client_data_dir(client25_dir)
+    data80 = client_data_dir(client80_dir)
+    index25 = resource_file(data25, "spradrn_")
+    index80 = resource_file(data80, "spradrn_")
+    ids_25 = sprite_ids(index25)
+    ids_80 = sprite_ids(index80)
     rows = []
     for line, name, template_id, image_number in enemybase_rows(enemybase):
         rows.append(
@@ -79,8 +85,8 @@ class ComparisonWindow:
         self,
         root: tk.Tk,
         enemybase: Path,
-        client25_index: Path,
-        client80_index: Path,
+        client25_dir: Path,
+        client80_dir: Path,
     ):
         self.root = root
         root.title("Enemy Client Resource Comparison")
@@ -89,14 +95,14 @@ class ComparisonWindow:
 
         self.paths = {
             "enemybase": tk.StringVar(value=str(enemybase)),
-            "client25": tk.StringVar(value=str(client25_index)),
-            "client80": tk.StringVar(value=str(client80_index)),
+            "client25": tk.StringVar(value=str(client25_dir)),
+            "client80": tk.StringVar(value=str(client80_dir)),
         }
         controls = ttk.Frame(root, padding=10)
         controls.pack(fill="x")
-        self._path_row(controls, 0, "Enemy template file", "enemybase", [("Text files", "*.txt"), ("All files", "*.*")])
-        self._path_row(controls, 1, "2.5 client index", "client25", [("Binary files", "*.bin"), ("All files", "*.*")])
-        self._path_row(controls, 2, "8.0 client index", "client80", [("Binary files", "*.bin"), ("All files", "*.*")])
+        self._path_row(controls, 0, "Enemy template file", "enemybase", is_directory=False, filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+        self._path_row(controls, 1, "2.5 client directory", "client25", is_directory=True)
+        self._path_row(controls, 2, "8.0 client directory", "client80", is_directory=True)
         controls.columnconfigure(1, weight=1)
         ttk.Button(controls, text="Compare", command=self.load).grid(row=3, column=2, pady=(8, 0), sticky="e")
 
@@ -179,22 +185,31 @@ class ComparisonWindow:
         ttk.Label(root, text="Click a cell and press Ctrl+C to copy its value.", padding=(10, 0, 10, 8)).pack(fill="x")
         self.load()
 
-    def _path_row(self, parent: ttk.Frame, row: int, label: str, key: str, filetypes: list[tuple[str, str]]) -> None:
+    def _path_row(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        label: str,
+        key: str,
+        *,
+        is_directory: bool,
+        filetypes: list[tuple[str, str]] | None = None,
+    ) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, padx=(0, 8), pady=3, sticky="w")
         ttk.Entry(parent, textvariable=self.paths[key]).grid(row=row, column=1, pady=3, sticky="ew")
         ttk.Button(
             parent,
             text="Browse...",
-            command=lambda: self._browse(key, filetypes),
+            command=lambda: self._browse(key, is_directory, filetypes or []),
         ).grid(row=row, column=2, padx=(8, 0), pady=3)
 
-    def _browse(self, key: str, filetypes: list[tuple[str, str]]) -> None:
+    def _browse(self, key: str, is_directory: bool, filetypes: list[tuple[str, str]]) -> None:
         current = Path(self.paths[key].get())
-        selected = filedialog.askopenfilename(
-            parent=self.root,
-            initialdir=current.parent if current.parent.exists() else None,
-            filetypes=filetypes,
-        )
+        initialdir = current if current.is_dir() else current.parent if current.parent.exists() else None
+        if is_directory:
+            selected = filedialog.askdirectory(parent=self.root, initialdir=initialdir, title="Select game client directory")
+        else:
+            selected = filedialog.askopenfilename(parent=self.root, initialdir=initialdir, filetypes=filetypes)
         if selected:
             self.paths[key].set(selected)
 
@@ -333,11 +348,11 @@ class ComparisonWindow:
         if len(values) <= column_index or values[column_index] != "yes":
             return "break"
         index_key = "client25" if column_index == 4 else "client80"
-        data_dir = Path(self.paths[index_key].get()).parent
+        client_dir = Path(self.paths[index_key].get())
         viewer = Path(__file__).with_name("sa_resource_viewer.py")
         try:
             subprocess.Popen(
-                [sys.executable, str(viewer), "--data-dir", str(data_dir), "--sprite", str(values[3])]
+                [sys.executable, str(viewer), "--client-dir", str(client_dir), "--sprite", str(values[3])]
             )
         except OSError as error:
             messagebox.showerror("Unable to open resource viewer", str(error), parent=self.root)
@@ -361,11 +376,11 @@ class ComparisonWindow:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find server enemy graphics missing from the 2.5 client.")
     parser.add_argument("--enemybase", type=Path, default=DEFAULT_ENEMYBASE)
-    parser.add_argument("--client25-index", type=Path, default=DEFAULT_25_INDEX)
-    parser.add_argument("--client80-index", type=Path, default=DEFAULT_80_INDEX)
+    parser.add_argument("--client25-dir", type=Path, default=DEFAULT_25_CLIENT)
+    parser.add_argument("--client80-dir", type=Path, default=DEFAULT_80_CLIENT)
     args = parser.parse_args()
     root = tk.Tk()
-    ComparisonWindow(root, args.enemybase, args.client25_index, args.client80_index)
+    ComparisonWindow(root, args.enemybase, args.client25_dir, args.client80_dir)
     root.mainloop()
 
 
