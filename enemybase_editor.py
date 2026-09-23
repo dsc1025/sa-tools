@@ -936,6 +936,23 @@ class Editor(tk.Tk):
             (9, '体力', ''), (10, '力量', ''),
             (11, '耐力', ''), (12, '敏捷', ''),
         ], base_vars, 4)
+        base_total = tk.StringVar()
+        ttk.Label(base_group, textvariable=base_total, anchor='e').grid(
+            row=3, column=0, columnspan=4, sticky='e', padx=2, pady=(4, 0))
+
+        def update_base_total(*_args):
+            total = 0
+            for field_index in (9, 10, 11, 12):
+                value = base_vars[field_index].get().strip()
+                if value and not re.fullmatch(r'[+-]?\d+', value):
+                    base_total.set('综合：—')
+                    return
+                total += int(value) if value else 0
+            base_total.set(f'体力 + 力量 + 耐力 + 敏捷 合计：{total}')
+
+        for field_index in (9, 10, 11, 12):
+            base_vars[field_index].trace_add('write', update_base_total)
+        update_base_total()
         add_field_group('属性', [
             (15, '地属性', '0'), (16, '水属性', '0'), (17, '火属性', '0'), (18, '风属性', '0'),
         ], attribute_vars, 5)
@@ -949,6 +966,7 @@ class Editor(tk.Tk):
         ], skill_vars, 7, columns=2)
 
         def confirm():
+            nonlocal edit_fields
             name = name_var.get().strip()
             image_text = image_var.get().strip()
             if not name:
@@ -993,8 +1011,7 @@ class Editor(tk.Tk):
                 return
 
             if editing and fields == edit_line.fields:
-                dialog.destroy()
-                return
+                return True
             self.snapshot()
             if editing:
                 line = edit_line
@@ -1018,10 +1035,86 @@ class Editor(tk.Tk):
                 self.tree.selection_set(item)
                 self.tree.focus(item)
                 self.tree.see(item)
-            dialog.destroy()
+            if editing:
+                edit_fields = list(fields)
+            else:
+                dialog.destroy()
+            return True
+
+        def dialog_has_changes():
+            if not editing:
+                return False
+            if name_var.get().strip() != edit_fields[0] or image_var.get().strip() != edit_fields[36]:
+                return True
+            for variables in (base_vars, attribute_vars, resistance_vars, skill_vars):
+                if any(variable.get().strip() != edit_fields[index]
+                       for index, variable in variables.items()):
+                    return True
+            return False
+
+        def ordered_templates():
+            records = [
+                (int(line.fields[6].strip()), index, line)
+                for index, line in enumerate(self.doc.records())
+                if len(line.fields) > 6 and line.fields[6].strip().isdigit()
+            ]
+            records.sort(key=lambda entry: (entry[0], entry[1]))
+            return [entry[2] for entry in records]
+
+        def navigate_template(direction):
+            records = ordered_templates()
+            try:
+                position = next(index for index, line in enumerate(records) if line is edit_line)
+            except StopIteration:
+                return
+            target_position = position + direction
+            if target_position < 0 or target_position >= len(records):
+                return
+            target = records[target_position]
+
+            if dialog_has_changes():
+                choice = messagebox.askyesnocancel(
+                    '未应用的修改',
+                    '当前基板有未应用的属性修改。\n'
+                    '选择“是”先应用再切换；选择“否”放弃修改；选择“取消”留在当前基板。',
+                    parent=dialog,
+                )
+                if choice is None:
+                    return
+                if choice:
+                    if not confirm():
+                        return
+                    dialog.destroy()
+                else:
+                    dialog.destroy()
+            else:
+                dialog.destroy()
+
+            if not any(line is target for line in self.visible.values()):
+                self.query.set('')
+                self.filter.set('全部')
+            self.load_record(target)
+            self.refresh()
+            item = next((key for key, line in self.visible.items() if line is target), None)
+            if item is not None:
+                self.tree.selection_set(item)
+                self.tree.focus(item)
+                self.tree.see(item)
+            self.new_template_dialog(target)
 
         ttk.Button(buttons, text='取消', command=dialog.destroy).pack(side='right', padx=4)
-        ttk.Button(buttons, text='应用修改' if editing else '新增基板', command=confirm).pack(side='right', padx=4)
+        ttk.Button(buttons, text='保存' if editing else '新增基板', command=confirm).pack(side='right', padx=4)
+        if editing:
+            ordered = ordered_templates()
+            current_position = next((index for index, line in enumerate(ordered) if line is edit_line), -1)
+            ttk.Button(
+                buttons, text='下一个', command=lambda: navigate_template(1),
+                state='normal' if 0 <= current_position < len(ordered) - 1 else 'disabled',
+            ).pack(side='right', padx=4)
+            ttk.Button(
+                buttons, text='上一个', command=lambda: navigate_template(-1),
+                state='normal' if current_position > 0 else 'disabled',
+            ).pack(side='right', padx=4)
         form.columnconfigure(1, weight=1)
         name_entry.focus_set()
 
