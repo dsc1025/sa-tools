@@ -288,17 +288,19 @@ def build(root: Path, set_name: str, anime_number: int, target_data: Path, outpu
                 rendered[key] = bitmap
                 next_frame += 1
                 real_offset += len(real)
-            event = 10000 if frame_index == last_attack_event else frame["flag"]
+            event = frame["flag"]
+            if item["action"] == 0 and frame["flag"]:
+                event = 10000 if frame_index == last_attack_event else 10100
             animation.extend(struct.pack("<IhhH", bitmap, 0, 0, event))
 
     manifest = {
         "format": FORMAT, "version": VERSION, "sprite": sprite,
         "frame_count": len(frame_records), "sprite_sha256": sha(bytes(animation)),
-        "conversion_revision": 4,
+        "conversion_revision": 5,
         "source": {"client": str(root), "set": set_name, "anime": anime_number, "palette": palette_number},
         "direction_mapping": CG_TO_SA_DIRECTION,
         "action_mapping": CG_TO_SA_ACTION,
-        "attack_event_normalization": "last non-zero CG attack event -> SA 10000",
+        "attack_event_normalization": "earlier non-zero CG attack events -> SA 10100; last non-zero -> SA 10000",
         "selected_actions": len(source_actions),
         "skipped_actions": [{"direction": item["direction"], "action": item["action"]} for item in skipped_actions],
         "frames": [],

@@ -85,7 +85,7 @@ class Viewer(tk.Tk):
         ttk.Button(bottom, text="批量导出 .spr", command=self.export_spr_batch).pack(side="left", padx=(0, 3))
         ttk.Button(bottom, text="批量导入 .spr", command=self.import_spr_batch).pack(side="left")
         ttk.Button(bottom, text="批量删除 .spr", command=self.delete_spr_batch).pack(side="left", padx=(3, 0))
-        self.status = ttk.Label(bottom, text="输入编号后读取")
+        self.status = ttk.Label(bottom, text="输入编号后读取", justify="left", anchor="w", wraplength=420)
         self.status.pack(side="left", padx=8)
         self.status.configure(text="请先选择客户端目录")
         if client_dir is not None:
@@ -189,7 +189,15 @@ class Viewer(tk.Tk):
             self.photo = tk.PhotoImage(data=base64.b64encode(png_bytes(CANVAS_WIDTH, CANVAS_HEIGHT, bytes(rgba))))
             self.canvas.delete("all")
             self.canvas.create_image(CANVAS_WIDTH // 2, CANVAS_HEIGHT // 2, image=self.photo)
-            self.status.configure(text=f"帧 {self.frame_index + 1}/{len(frames)} | 图片 {info.number} | {info.width}×{info.height} | 客户端调色板 | 声音 {frame['sound']}")
+            markers = [str(item["sound"]) for item in frames if item["sound"] != 0]
+            marker_text = "、".join(markers) if markers else "无"
+            self.status.configure(
+                text=(
+                    f"帧 {self.frame_index + 1}/{len(frames)} | 图片 {info.number} | "
+                    f"{info.width}×{info.height} | 客户端调色板\n"
+                    f"非零标记：{marker_text}"
+                )
+            )
         except Exception as error:
             self.status.configure(text=f"预览失败：{error}")
 
@@ -329,6 +337,9 @@ class Viewer(tk.Tk):
                 self.sprite_var.set(str(last_target))
                 self.load_sprite()
             lines = [f"成功导入：{len(imported)} 个"]
+            normalized_events = sum(result.get("attack_events_normalized", 0) for _package, result in imported)
+            if normalized_events:
+                lines.append(f"CG 攻击标记规范化：{normalized_events} 个（此前标记 10100，最后标记 10000）")
             if skipped:
                 lines.append(f"跳过：{len(skipped)} 个")
             if failed:

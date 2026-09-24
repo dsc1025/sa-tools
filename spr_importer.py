@@ -60,6 +60,32 @@ def _rewrite_frame_references(block: bytes, mapping: dict[int, int]) -> bytes:
     return bytes(result)
 
 
+def _normalize_cg_attack_events(block: bytes) -> tuple[bytes, int]:
+    """Set earlier marked attack frames to 10100 and the last to 10000."""
+    result = bytearray(block)
+    cursor = 0
+    changed = 0
+    while cursor < len(result):
+        if cursor + 12 > len(result):
+            raise ValueError("动画块不完整")
+        _direction, action, _duration, count = struct.unpack_from("<HHII", result, cursor)
+        cursor += 12
+        if cursor + count * 10 > len(result):
+            raise ValueError("动画帧超出动画块边界")
+        event_offsets: list[int] = []
+        for _ in range(count):
+            event_offset = cursor + 8
+            if action == 0 and struct.unpack_from("<H", result, event_offset)[0] != 0:
+                event_offsets.append(event_offset)
+            cursor += 10
+        for index, event_offset in enumerate(event_offsets):
+            value = 10000 if index == len(event_offsets) - 1 else 10100
+            if struct.unpack_from("<H", result, event_offset)[0] != value:
+                struct.pack_into("<H", result, event_offset, value)
+                changed += 1
+    return bytes(result), changed
+
+
 def filename_image_number(package: Path) -> int:
     if package.suffix.lower() != ".spr" or not package.stem.isascii() or not package.stem.isdecimal():
         raise ValueError("资源包文件名必须是数字，例如 101819.spr")
@@ -134,6 +160,11 @@ def import_package(package: Path, target_data: Path, *, overwrite: bool = False)
             new_frames.append((source_number, next_number, source_index, source_real))
             next_number += 1
 
+    source = manifest.get("source", {})
+    is_cg_package = isinstance(source, dict) and {"client", "set", "anime", "palette"}.issubset(source)
+    normalized_attack_events = 0
+    if is_cg_package:
+        source_sprite_data, normalized_attack_events = _normalize_cg_attack_events(source_sprite_data)
     sprite_data = _rewrite_frame_references(source_sprite_data, frame_mapping)
     original_sizes = {name: path.stat().st_size for name, path in files.items()}
     report = {
@@ -143,6 +174,7 @@ def import_package(package: Path, target_data: Path, *, overwrite: bool = False)
         "overwritten": existing_sprite is not None,
         "frames_added": len(new_frames),
         "frames_reused": reused,
+        "attack_events_normalized": normalized_attack_events,
         "original_sizes": original_sizes,
         "frame_mapping": frame_mapping,
         "package": str(package),

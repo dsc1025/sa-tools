@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import struct
 import sys
@@ -12,12 +13,14 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from client_data import client_data_dir, resource_file
+from spr_package import export_package
 
 
 ROOT = Path(r"C:\Work\SA")
 DEFAULT_ENEMYBASE = ROOT / "sa-server" / "2.5" / "gmsv" / "data" / "enemybase.txt"
-DEFAULT_25_CLIENT = ROOT / "SA2.5" / "stoneage2.5"
+DEFAULT_25_CLIENT = ROOT / "SA2.5" / "SA2.5"
 DEFAULT_80_CLIENT = ROOT / "SA8.0"
+SETTINGS_PATH = Path(__file__).resolve().with_name("compare_enemy_client_resources.settings.json")
 
 # Confirmed from the server's enemybase format: column 6 is the template ID;
 # column 36 is the client base image/animation number.
@@ -31,6 +34,20 @@ HEADERS = (
     "in_client_2.5",
     "in_client_8.0",
 )
+
+
+def read_settings() -> dict[str, str]:
+    try:
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(settings, dict):
+        return {}
+    return {
+        key: value
+        for key, value in settings.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
 
 
 def sprite_ids(path: Path) -> set[int]:
@@ -92,6 +109,7 @@ class ComparisonWindow:
         root.title("Enemy Client Resource Comparison")
         root.geometry("1100x720")
         root.minsize(760, 420)
+        root.protocol("WM_DELETE_WINDOW", self.close)
 
         self.paths = {
             "enemybase": tk.StringVar(value=str(enemybase)),
@@ -125,6 +143,16 @@ class ComparisonWindow:
         status_filter.pack(side="left", padx=6)
         status_filter.bind("<<ComboboxSelected>>", lambda _event: self._apply_filters())
         ttk.Button(filters, text="Clear", command=self._clear_filters).pack(side="left", padx=(4, 0))
+        ttk.Label(filters, text="导出来源").pack(side="left", padx=(18, 4))
+        self.export_client_var = tk.StringVar(value="2.5")
+        ttk.Combobox(
+            filters,
+            textvariable=self.export_client_var,
+            values=("2.5", "8.0"),
+            state="readonly",
+            width=5,
+        ).pack(side="left")
+        ttk.Button(filters, text="导出当前列表 .spr", command=self._export_visible_sprites).pack(side="left", padx=(8, 0))
 
         self.summary = tk.StringVar(value="Select the files and click Compare.")
         ttk.Label(root, textvariable=self.summary, padding=(10, 0, 10, 10)).pack(fill="x")
@@ -212,6 +240,50 @@ class ComparisonWindow:
             selected = filedialog.askopenfilename(parent=self.root, initialdir=initialdir, filetypes=filetypes)
         if selected:
             self.paths[key].set(selected)
+            self.save_settings()
+
+    def save_settings(self) -> None:
+        settings = {f"{key}_path" if key == "enemybase" else f"{key}_dir": value.get() for key, value in self.paths.items()}
+        try:
+            SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as error:
+            messagebox.showwarning("无法保存路径", f"路径已选择，但无法写入设置文件：\n{error}", parent=self.root)
+
+    def close(self) -> None:
+        self.save_settings()
+        self.root.destroy()
+
+    def _refresh_client_dir(self, key: str) -> Path | None:
+        current = Path(self.paths[key].get()).expanduser()
+        if current.is_dir():
+            return current
+
+        parent = current.parent
+        candidates = []
+        if parent.is_dir():
+            for candidate in parent.iterdir():
+                if candidate.is_dir() and candidate.name.lower() != "data":
+                    data_dir = candidate / "data"
+                    if data_dir.is_dir() and any(data_dir.glob("spradrn_*.bin")):
+                        candidates.append(candidate)
+
+        if len(candidates) == 1:
+            current = candidates[0]
+            self.paths[key].set(str(current))
+            self.save_settings()
+            return current
+
+        selected = filedialog.askdirectory(
+            parent=self.root,
+            initialdir=parent if parent.is_dir() else None,
+            title=f"重新选择 {key[-2:]} 客户端目录",
+        )
+        if not selected:
+            return None
+        current = Path(selected)
+        self.paths[key].set(str(current))
+        self.save_settings()
+        return current
 
     def _show_context_menu(self, event: tk.Event) -> None:
         item = self.table.identify_row(event.y)
@@ -296,6 +368,62 @@ class ComparisonWindow:
         self.filter_var.set("All")
         self._apply_filters()
 
+    def _export_visible_sprites(self) -> None:
+        client_version = self.export_client_var.get()
+        status_column = 4 if client_version == "2.5" else 5
+        numbers: list[int] = []
+        seen: set[int] = set()
+        for item in self.table.get_children():
+            values = self.table.item(item, "values")
+            if len(values) <= status_column or values[status_column] != "yes":
+                continue
+            number = int(values[3])
+            if number not in seen:
+                seen.add(number)
+                numbers.append(number)
+        if not numbers:
+            messagebox.showinfo("没有可导出的资源", f"当前列表中没有在 {client_version} 客户端存在的资源。", parent=self.root)
+            return
+
+        directory = filedialog.askdirectory(parent=self.root, title="选择 .spr 批量导出目录")
+        if not directory:
+            return
+        output_dir = Path(directory)
+
+        client_key = "client25" if client_version == "2.5" else "client80"
+        try:
+            data_dir = client_data_dir(Path(self.paths[client_key].get()))
+        except (OSError, ValueError) as error:
+            messagebox.showerror("无法读取客户端资源", str(error), parent=self.root)
+            return
+
+        exported: list[int] = []
+        failed: list[tuple[int, str]] = []
+        for index, number in enumerate(numbers, 1):
+            target = output_dir / f"{number}.spr"
+            self.summary.set(f"正在导出 {client_version} 客户端资源 {index}/{len(numbers)}：{number}.spr")
+            self.root.update_idletasks()
+            try:
+                export_package(data_dir, number, target)
+                exported.append(number)
+            except Exception as error:
+                failed.append((number, str(error)))
+
+        self._apply_filters()
+        details = [f"{number}.spr：{error}" for number, error in failed]
+        lines = [f"成功导出：{len(exported)} 个"]
+        if failed:
+            lines.append(f"失败：{len(failed)} 个")
+        if details:
+            lines.extend(["", *details[:20]])
+            if len(details) > 20:
+                lines.append(f"……另外 {len(details) - 20} 个未展开")
+        summary = "\n".join(lines)
+        if failed:
+            messagebox.showwarning("批量导出完成", summary, parent=self.root)
+        else:
+            messagebox.showinfo("批量导出完成", summary, parent=self.root)
+
     def _apply_filters(self) -> None:
         query = self.search_var.get().strip().casefold()
         selected_filter = self.filter_var.get()
@@ -359,28 +487,39 @@ class ComparisonWindow:
         return "break"
 
     def load(self) -> None:
+        client25_dir = self._refresh_client_dir("client25")
+        client80_dir = self._refresh_client_dir("client80")
+        if client25_dir is None or client80_dir is None:
+            return
         try:
             rows = comparison_rows(
                 Path(self.paths["enemybase"].get()),
-                Path(self.paths["client25"].get()),
-                Path(self.paths["client80"].get()),
+                client25_dir,
+                client80_dir,
             )
         except (OSError, ValueError) as error:
             messagebox.showerror("Unable to compare resources", str(error), parent=self.root)
             return
 
+        self.save_settings()
         self.all_rows = rows
         self._apply_filters()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find server enemy graphics missing from the 2.5 client.")
-    parser.add_argument("--enemybase", type=Path, default=DEFAULT_ENEMYBASE)
-    parser.add_argument("--client25-dir", type=Path, default=DEFAULT_25_CLIENT)
-    parser.add_argument("--client80-dir", type=Path, default=DEFAULT_80_CLIENT)
+    parser.add_argument("--enemybase", type=Path)
+    parser.add_argument("--client25-dir", type=Path)
+    parser.add_argument("--client80-dir", type=Path)
     args = parser.parse_args()
+    saved = read_settings()
     root = tk.Tk()
-    ComparisonWindow(root, args.enemybase, args.client25_dir, args.client80_dir)
+    ComparisonWindow(
+        root,
+        args.enemybase or Path(saved.get("enemybase_path", DEFAULT_ENEMYBASE)),
+        args.client25_dir or Path(saved.get("client25_dir", DEFAULT_25_CLIENT)),
+        args.client80_dir or Path(saved.get("client80_dir", DEFAULT_80_CLIENT)),
+    )
     root.mainloop()
 
 
