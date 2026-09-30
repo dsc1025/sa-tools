@@ -937,18 +937,29 @@ class Editor(tk.Tk):
             (11, '耐力', ''), (12, '敏捷', ''),
         ], base_vars, 4)
         base_total = tk.StringVar()
-        ttk.Label(base_group, textvariable=base_total, anchor='e').grid(
-            row=3, column=0, columnspan=4, sticky='e', padx=2, pady=(4, 0))
+        ttk.Label(base_group, textvariable=base_total, anchor='w').grid(
+            row=3, column=0, columnspan=4, sticky='w', padx=2, pady=(4, 0))
 
         def update_base_total(*_args):
             total = 0
             for field_index in (9, 10, 11, 12):
                 value = base_vars[field_index].get().strip()
                 if value and not re.fullmatch(r'[+-]?\d+', value):
-                    base_total.set('综合：—')
+                    base_total.set('四项合计：—  ｜  成长倍率：—')
                     return
                 total += int(value) if value else 0
-            base_total.set(f'体力 + 力量 + 耐力 + 敏捷 合计：{total}')
+            # Ordinary pet creation selects the rank from the template total.
+            # Normal level-ups use this rank's random multiplier, not LVUPPOINT.
+            for threshold, minimum, maximum in (
+                (100, 4.50, 5.00), (95, 4.70, 5.20), (90, 4.90, 5.40),
+                (85, 5.10, 5.60), (80, 5.30, 5.80),
+            ):
+                if total >= threshold:
+                    break
+            else:
+                minimum, maximum = 5.50, 6.00
+            base_total.set(
+                f'四项合计：{total}  ｜  成长倍率：{minimum:.2f}～{maximum:.2f}')
 
         for field_index in (9, 10, 11, 12):
             base_vars[field_index].trace_add('write', update_base_total)
