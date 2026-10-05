@@ -43,9 +43,7 @@ class Browser(ttk.Frame):
         self.tree.grid(row=0, column=0, sticky='nsew')
         vertical = ttk.Scrollbar(listing, orient='vertical', command=self.tree.yview)
         vertical.grid(row=0, column=1, sticky='ns')
-        horizontal = ttk.Scrollbar(listing, orient='horizontal', command=self.tree.xview)
-        horizontal.grid(row=1, column=0, sticky='ew')
-        self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.tree.configure(yscrollcommand=vertical.set)
         listing.columnconfigure(0, weight=1)
         listing.rowconfigure(0, weight=1)
         self.tree.bind('<Double-1>', lambda event: self.detail())
@@ -58,8 +56,8 @@ class Browser(ttk.Frame):
         columns = CATALOGS[self.kind].columns
         self.tree.configure(columns=[key for key, label in columns])
         for key, label in columns:
-            self.tree.heading(key, text=label)
-            self.tree.column(key, width=130, minwidth=80, stretch=False)
+            self.tree.heading(key, text=label, anchor='w')
+            self.tree.column(key, width=130, minwidth=20, stretch=True, anchor='w')
 
     def set_enabled(self, enabled):
         state = 'normal' if enabled else 'disabled'
