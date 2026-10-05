@@ -22,6 +22,7 @@ class Workshop(tk.Tk):
         self.repository = Repository(self.connection)
         self.pages = []
         self.pet_pages = []
+        self.ride_pages = []
         self.selected_account = None
         self.selected_character = None
         self.account_name = ''
@@ -118,11 +119,20 @@ class Workshop(tk.Tk):
         self.skill_page = Browser(body, self, (('技能魔法总表', 'skills'),))
         self.pages.append(self.skill_page)
         body.add(self.skill_page, text='技能')
+        self.ride_tabs = ttk.Notebook(body)
+        body.add(self.ride_tabs, text='骑乘')
+        for title, kind in (('默认映射', 'ride_base'), ('骑宠许可', 'ride_pet'),
+                            ('骑乘形象', 'ride_image'), ('人物类型', 'ride_player'), ('族长许可', 'ride_leader')):
+            page = Browser(self.ride_tabs, self, ((title, kind),))
+            self.ride_pages.append(page)
+            self.pages.append(page)
+            self.ride_tabs.add(page, text=title)
         body.add(panel, text='设置')
         body.select(panel)
         body.bind('<<NotebookTabChanged>>', self.tab_changed)
         self.assets_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         self.pet_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
+        self.ride_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         profiles = ttk.Frame(panel)
         profiles.pack(fill='x', pady=(0, 10))
         ttk.Label(profiles, text='服务器配置').pack(side='left')
@@ -303,7 +313,7 @@ class Workshop(tk.Tk):
         self.connect_button.configure(state='normal' if editable else 'disabled')
         self.disconnect_button.configure(state='normal' if self.connected and not self.busy else 'disabled')
         for page in self.pages:
-            allowed = (page in self.pet_pages or page in (self.item_page, self.skill_page)
+            allowed = (page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page)
                        or page.kind == 'accounts' or page.scope is not None)
             page.set_enabled(self.connected and not self.busy and allowed)
         self.role_box.configure(state='readonly' if self.connected and not self.busy and self.role_rows else 'disabled')
@@ -316,6 +326,13 @@ class Workshop(tk.Tk):
                 if not page.loaded:
                     page.search()
                 return
+        if self.notebook.select() == str(self.ride_tabs):
+            selected = self.ride_tabs.select()
+            for page in self.ride_pages:
+                if str(page) == selected and not page.loaded:
+                    page.search()
+                    break
+            return
         if self.notebook.select() == str(self.pet_tabs):
             selected = self.pet_tabs.select()
             for page in self.pet_pages:
@@ -338,7 +355,7 @@ class Workshop(tk.Tk):
                 break
 
     def selected_row(self, page, row):
-        if page in self.pet_pages or page in (self.item_page, self.skill_page):
+        if page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page):
             return
         if page.kind == 'accounts':
             identity = row['id']

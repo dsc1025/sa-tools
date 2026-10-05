@@ -75,7 +75,27 @@ def instance_catalog(kind):
         (('id', 'p.id'), ('character_id', 'p.character_id')))
 
 
+def ride_catalog(config_type, columns):
+    return Catalog(
+        f"(SELECT * FROM ride_configurations WHERE config_type='{config_type}') r",
+        '(r.entry_index * 64 + r.slot_index) AS id,r.entry_index,r.slot_index,r.value1,r.value2,r.value3,r.value4',
+        '(r.entry_index * 64 + r.slot_index)', columns,
+        tuple(f'CAST(r.{field} AS CHAR)' for field in ('entry_index', 'slot_index', 'value1', 'value2', 'value3', 'value4')))
+
+
 CATALOGS = {
+    'ride_base': ride_catalog('base',
+        (('entry_index', '记录序号'), ('value1', '骑乘形象'), ('value2', '人物形象'),
+         ('value3', '宠物形象'), ('value4', '旧基板编号'))),
+    'ride_pet': ride_catalog('pet',
+        (('entry_index', '许可槽位'), ('value1', '宠物形象'), ('value2', '备用宠物形象'))),
+    'ride_image': ride_catalog('image',
+        (('entry_index', '人物类型'), ('slot_index', '骑乘槽位'), ('value1', '骑乘形象'))),
+    'ride_player': ride_catalog('player',
+        (('entry_index', '记录序号'), ('value1', '人物基础形象'), ('value2', '人物类型'), ('value3', '原性别码'))),
+    'ride_leader': ride_catalog('leader',
+        (('entry_index', '记录序号'), ('value1', '庄园楼层'), ('value2', '族长许可槽位'),
+         ('value3', '长老许可槽位'), ('value4', '族员许可槽位'))),
     'accounts': Catalog(
         "accounts a LEFT JOIN account_permissions g ON g.account_id=a.id AND g.permission='gm.level' "
         'LEFT JOIN login_sessions s ON s.account_id=a.id',
@@ -208,7 +228,13 @@ class Repository:
             return rows
 
         with self.connection.snapshot():
-            if kind == 'accounts':
+            if kind in ('ride_base', 'ride_pet', 'ride_image', 'ride_player', 'ride_leader'):
+                entry, slot = divmod(int(identity), 64)
+                section('骑乘配置',
+                        'SELECT config_type,entry_index,slot_index,value1,value2,value3,value4 '
+                        'FROM ride_configurations WHERE config_type=%s AND entry_index=%s AND slot_index=%s',
+                        (kind.removeprefix('ride_'), entry, slot))
+            elif kind == 'accounts':
                 rows = section('账户', 'SELECT id,username,enabled,created_at FROM accounts WHERE id=%s')
                 section('权限', 'SELECT permission,level FROM account_permissions WHERE account_id=%s ORDER BY permission', limit=10)
                 section('角色', 'SELECT id,slot,name,revision,saved_at FROM characters WHERE account_id=%s ORDER BY slot', limit=10)
