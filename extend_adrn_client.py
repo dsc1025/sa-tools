@@ -10,7 +10,9 @@ endpoint directly into the executable.
 
 It writes the expanded executable to a separate output file, leaving the source
 executable unchanged. The server endpoint is entered when the script runs; no
-serverlist.ini or SACH-MX0.30/server.ini is used.
+external server-list or server configuration file is used. The server name,
+IPv4 address and port are embedded as a single-server list in the executable;
+the legacy encrypted-list reader and writer are replaced.
 """
 from __future__ import annotations
 
@@ -25,8 +27,8 @@ IMAGE_SCN_MEM_READ = 0x40000000
 IMAGE_SCN_MEM_WRITE = 0x80000000
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SOURCE = PROJECT_ROOT / "SA2.5" / "sa_2903.exe"
-DEFAULT_OUTPUT = PROJECT_ROOT / "SA2.5" / "sa_2903.expanded.exe"
+DEFAULT_SOURCE = PROJECT_ROOT / "sa-client" / "SA2.5" / "sa_2903.exe"
+DEFAULT_OUTPUT = DEFAULT_SOURCE.with_name("sa_2903.expanded.exe")
 DEFAULT_SERVER_IP = "127.0.0.1"
 DEFAULT_SERVER_PORT = 9065
 DEFAULT_SERVER_NAME = "StoneAge"
@@ -35,6 +37,10 @@ CLIENT_IMAGE_BASE = 0x00400000
 SERVER_CONNECT_HOOK_VA = 0x00462D80
 SERVER_CONNECT_VA = 0x004569D6
 SERVER_CONNECT_CALL_VAS = (0x0043A534, 0x0043A744, 0x0043AA61)
+SERVER_LIST_READ_VA = 0x00451263
+SERVER_LIST_READ_END_VA = 0x00451345
+SERVER_LIST_WRITE_VA = 0x00451153
+CLIENT_STRCPY_VA = 0x00457B90
 
 
 def u16(data: bytearray | bytes, offset: int) -> int:
@@ -126,12 +132,85 @@ def patch_server_connection(
             SERVER_CONNECT_HOOK_VA - (call_va + 5),
         )
 
+def patch_server_list(
+    data: bytearray,
+    image_base: int,
+    sections: list[dict[str, int | str]],
+    server_ip: str,
+    port: int,
+    server_name: str,
+) -> None:
+    """Replace the cdecl list reader with an embedded-list copy, and disable writes.
+
+    Both callers supply a writable stack buffer. The original parser tokenizes
+    that copy, so the embedded source in .text remains unchanged on later reads.
+    Reuse the old reader's bytes to preserve the executable's exact file size.
+    """
+    if image_base != CLIENT_IMAGE_BASE:
+        raise ValueError(f"unexpected client image base: 0x{image_base:08X}")
+    if not 1 <= port <= 65535:
+        raise ValueError("server port must be between 1 and 65535")
+    if not server_name or any(ord(char) < 32 or char in ";\x7f" for char in server_name):
+        raise ValueError("server name must not be empty or contain semicolons/control characters")
+    try:
+        name_bytes = server_name.encode("gbk")
+    except UnicodeEncodeError as error:
+        raise ValueError("server name must be representable in GBK") from error
+    if len(name_bytes) > 63:
+        raise ValueError("server name must be at most 63 GBK bytes")
+    prefix, suffix = str(ipaddress.IPv4Address(server_ip)).rsplit(".", 1)
+    payload = (
+        b"0,0;1;0;" + name_bytes + b";1;" + prefix.encode("ascii")
+        + b";" + name_bytes + b";" + f"{suffix}:{port};;".encode("ascii") + b"\0"
+    )
+
+    def file_offset(va: int, size: int) -> int:
+        rva = va - image_base
+        for section in sections:
+            start = int(section["virtual_address"])
+            raw_size = int(section["raw_size"])
+            if start <= rva and rva + size <= start + raw_size:
+                offset = int(section["raw_pointer"]) + rva - start
+                if offset + size <= len(data):
+                    return offset
+        raise ValueError(f"server-list patch is outside file-backed sections: 0x{va:08X}")
+
+    reader_size = SERVER_LIST_READ_END_VA - SERVER_LIST_READ_VA
+    reader_offset = file_offset(SERVER_LIST_READ_VA, reader_size)
+    writer_offset = file_offset(SERVER_LIST_WRITE_VA, 13)
+    strcpy_offset = file_offset(CLIENT_STRCPY_VA, 7)
+    for offset, expected, label in (
+        (reader_offset, bytes.fromhex("55 8B EC B8 10 00 01 00 E8 E0 73 00 00"), "reader"),
+        (writer_offset, bytes.fromhex("55 8B EC B8 14 40 01 00 E8 F0 74 00 00"), "writer"),
+        (strcpy_offset, bytes.fromhex("57 8B 7C 24 08 EB 6A"), "string copy"),
+    ):
+        if data[offset:offset + len(expected)] != expected:
+            raise ValueError(f"unexpected server-list {label}; use the original supported client")
+
+    # mov eax,[esp+4]; push source; push eax; call strcpy; add esp,8;
+    # mov eax,1; ret. cdecl preserves the caller's argument and saved registers.
+    stub_size = 24
+    stub = bytearray.fromhex("8B 44 24 04 68")
+    stub.extend(struct.pack("<I", SERVER_LIST_READ_VA + stub_size))
+    stub.extend((0x50, 0xE8))
+    stub.extend(struct.pack("<i", CLIENT_STRCPY_VA - (SERVER_LIST_READ_VA + 15)))
+    stub.extend(bytes.fromhex("83 C4 08 B8 01 00 00 00 C3"))
+    if len(stub) != stub_size or len(stub) + len(payload) > reader_size:
+        raise ValueError("embedded server list does not fit in the original reader")
+    replacement = stub + payload
+    replacement.extend(b"\x90" * (reader_size - len(replacement)))
+    data[reader_offset:reader_offset + reader_size] = replacement
+    # Report success without opening, encrypting or writing any list file.
+    data[writer_offset:writer_offset + 6] = bytes.fromhex("B8 01 00 00 00 C3")
+
+
 def patch_client(
     source: Path,
     output: Path,
     capacity: int,
     server_ip: str,
     port: int,
+    server_name: str = DEFAULT_SERVER_NAME,
 ) -> dict[str, int | str]:
     if capacity <= 300000:
         raise ValueError("capacity must be greater than 300000")
@@ -270,6 +349,7 @@ def patch_client(
         raise ValueError(f"unexpected 300000 guard count: {limit_replacements}")
 
     patch_server_connection(data, image_base, server_ip, port)
+    patch_server_list(data, image_base, sections, server_ip, port, server_name)
 
     # Keep the PE checksum coherent for tools that inspect it.
     put32(data, checksum_offset, 0)
@@ -288,6 +368,8 @@ def patch_client(
         "table_references": refs,
         "server_connect_hooks": len(SERVER_CONNECT_CALL_VAS),
         "server": f"{server_ip}:{port}",
+        "server_name": server_name,
+        "server_list": "embedded (no cax.ini/serverlist.ini required)",
         "map_colour_start": f"0x{new_colour_start:08X}",
         "map_colour_end": f"0x{new_colour_end:08X}",
         "limit_replacements": limit_replacements,
@@ -303,6 +385,8 @@ def main() -> None:
     parser.add_argument("output", nargs="?", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--capacity", type=int, default=1_000_000)
     args = parser.parse_args()
+    if not args.source.is_file():
+        parser.error(f"找不到原始客户端: {args.source}；请通过 source 参数指定 sa_2903.exe")
 
     try:
         server_ip_text = input(f"服务器 IP [{DEFAULT_SERVER_IP}]: ").strip()
@@ -320,10 +404,12 @@ def main() -> None:
     if not server_name:
         server_name = DEFAULT_SERVER_NAME
 
-    result = patch_client(args.source, args.output, args.capacity, server_ip, port)
+    try:
+        result = patch_client(args.source, args.output, args.capacity, server_ip, port, server_name)
+    except ValueError as error:
+        parser.error(str(error))
     for key, value in result.items():
         print(f"{key}={value}")
-    print(f"server_name={server_name}")
 
 
 if __name__ == "__main__":
