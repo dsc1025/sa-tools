@@ -21,6 +21,7 @@ class Workshop(tk.Tk):
         self.connection = Connection()
         self.repository = Repository(self.connection)
         self.pages = []
+        self.pet_pages = []
         self.selected_account = None
         self.selected_character = None
         self.account_name = ''
@@ -99,13 +100,29 @@ class Workshop(tk.Tk):
         modules = (('宠物', (('玩家宠物', 'pets'),)),
                    ('物品', (('玩家物品', 'items'),)))
         for title, modes in modules:
-            page = Browser(self.assets_tabs, self, modes)
+            page = Browser(self.assets_tabs, self, modes, scoped=True)
             self.pages.append(page)
             self.assets_tabs.add(page, text=title)
+        self.pet_tabs = ttk.Notebook(body)
+        body.add(self.pet_tabs, text='宠物')
+        for title, kind in (('基板', 'pet_templates'),
+                            ('敌人', 'enemy_templates'), ('敌人组合', 'enemy_groups'),
+                            ('遇敌区域', 'encounter_areas'), ('捕捉条件', 'pet_capture_requirements')):
+            page = Browser(self.pet_tabs, self, ((title, kind),))
+            self.pet_pages.append(page)
+            self.pages.append(page)
+            self.pet_tabs.add(page, text=title)
+        self.item_page = Browser(body, self, (('道具总表', 'item_templates'),))
+        self.pages.append(self.item_page)
+        body.add(self.item_page, text='道具')
+        self.skill_page = Browser(body, self, (('技能魔法总表', 'skills'),))
+        self.pages.append(self.skill_page)
+        body.add(self.skill_page, text='技能')
         body.add(panel, text='设置')
         body.select(panel)
         body.bind('<<NotebookTabChanged>>', self.tab_changed)
         self.assets_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
+        self.pet_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         profiles = ttk.Frame(panel)
         profiles.pack(fill='x', pady=(0, 10))
         ttk.Label(profiles, text='服务器配置').pack(side='left')
@@ -286,12 +303,27 @@ class Workshop(tk.Tk):
         self.connect_button.configure(state='normal' if editable else 'disabled')
         self.disconnect_button.configure(state='normal' if self.connected and not self.busy else 'disabled')
         for page in self.pages:
-            allowed = page.kind == 'accounts' or page.scope is not None
+            allowed = (page in self.pet_pages or page in (self.item_page, self.skill_page)
+                       or page.kind == 'accounts' or page.scope is not None)
             page.set_enabled(self.connected and not self.busy and allowed)
         self.role_box.configure(state='readonly' if self.connected and not self.busy and self.role_rows else 'disabled')
 
     def tab_changed(self, event=None):
-        if not self.connected or self.busy or self.notebook.select() != str(self.players):
+        if not self.connected or self.busy:
+            return
+        for page in (self.item_page, self.skill_page):
+            if self.notebook.select() == str(page):
+                if not page.loaded:
+                    page.search()
+                return
+        if self.notebook.select() == str(self.pet_tabs):
+            selected = self.pet_tabs.select()
+            for page in self.pet_pages:
+                if str(page) == selected and not page.loaded:
+                    page.search()
+                    break
+            return
+        if self.notebook.select() != str(self.players):
             return
         if not self.pages[0].loaded:
             self.pages[0].search()
@@ -306,6 +338,8 @@ class Workshop(tk.Tk):
                 break
 
     def selected_row(self, page, row):
+        if page in self.pet_pages or page in (self.item_page, self.skill_page):
+            return
         if page.kind == 'accounts':
             identity = row['id']
             if identity == self.selected_account:
@@ -317,7 +351,7 @@ class Workshop(tk.Tk):
             self.role_rows = []
             self.role_box.set('')
             self.role_box.configure(values=())
-            for child in self.pages[1:]:
+            for child in self.pages[1:4]:
                 child.clear_results()
                 child.keyword.set('')
                 child.scope = ('account_id', identity) if child.kind == 'characters' else None
@@ -330,7 +364,7 @@ class Workshop(tk.Tk):
                 return
             self.selected_character = identity
             self.pages[1].show_character(row)
-            for child in self.pages[2:]:
+            for child in self.pages[2:4]:
                 child.clear_results()
                 child.keyword.set('')
                 child.scope = ('character_id', identity)
@@ -355,7 +389,7 @@ class Workshop(tk.Tk):
             self.pages[1].clear_results()
             self.pages[1].loaded = True
             self.pages[1].info.set('此账户没有角色。')
-            for page in self.pages[2:]:
+            for page in self.pages[2:4]:
                 page.clear_results()
                 page.scope = None
 

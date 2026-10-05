@@ -97,6 +97,32 @@ CATALOGS = {
         'pet_base_templates p', 'p.tempno AS id,p.name,p.imgnumber,p.slot,p.limitlevel', 'p.tempno',
         (('id', '模板编号'), ('name', '名称'), ('imgnumber', '形象编号'),
          ('slot', '技能槽数'), ('limitlevel', '等级上限')), ('p.name',), filters=(('id', 'p.tempno'),)),
+    'enemy_templates': Catalog(
+        'enemy_templates e LEFT JOIN pet_base_templates p ON p.tempno=e.tempno',
+        'e.id,e.name,e.tempno,p.name AS base_name,e.lv_min,e.lv_max,e.exp', 'e.id',
+        (('id', '敌人编号'), ('name', '名称'), ('tempno', '基板编号'), ('base_name', '基板名称'),
+         ('lv_min', '最低等级'), ('lv_max', '最高等级'), ('exp', '经验')),
+        ('e.name', 'p.name', 'CAST(e.tempno AS CHAR)'), filters=(('id', 'e.id'),)),
+    'enemy_groups': Catalog(
+        'enemy_groups g', 'g.id,g.name,g.enemy_id1,g.enemy_id2,g.enemy_id3,g.appearbyitemid,g.notappearbyitemid',
+        'g.id', (('id', '组合编号'), ('name', '名称'), ('enemy_id1', '敌人 1'),
+                 ('enemy_id2', '敌人 2'), ('enemy_id3', '敌人 3'),
+                 ('appearbyitemid', '出现道具'), ('notappearbyitemid', '排除道具')),
+        ('g.name',) + tuple(f'CAST(g.enemy_id{index} AS CHAR)' for index in range(1, 11)),
+        filters=(('id', 'g.id'),)),
+    'encounter_areas': Catalog(
+        'encounter_areas e', 'e.source_order AS id,e.id AS area_id,e.floor,e.x1,e.y1,e.x2,e.y2,e.enemymaxnum',
+        'e.source_order', (('id', '记录序号'), ('area_id', '区域编号'), ('floor', '地图'),
+                          ('x1', '起点 X'), ('y1', '起点 Y'), ('x2', '终点 X'), ('y2', '终点 Y'),
+                          ('enemymaxnum', '敌人数上限')),
+        ('CAST(e.id AS CHAR)', 'CAST(e.floor AS CHAR)'), filters=(('id', 'e.source_order'),)),
+    'pet_capture_requirements': Catalog(
+        'pet_capture_requirements r LEFT JOIN pet_base_templates p ON p.tempno=r.pet_id',
+        'r.pet_id AS id,p.name,r.item_id1,r.item_id2,r.item_id3', 'r.pet_id',
+        (('id', '基板编号'), ('name', '宠物名称'), ('item_id1', '道具 1'),
+         ('item_id2', '道具 2'), ('item_id3', '道具 3')),
+        ('p.name',) + tuple(f'CAST(r.item_id{index} AS CHAR)' for index in range(1, 16)),
+        filters=(('id', 'r.pet_id'),)),
     'item_templates': Catalog(
         'item_templates p', 'p.id,p.name,p.type,p.cost,p.imagenumber,p.skill_id,p.pet_skill_id', 'p.id',
         (('id', '模板编号'), ('name', '名称'), ('type', '类型'), ('cost', '价格'),
@@ -174,26 +200,28 @@ class Repository:
     def detail(self, kind, identity):
         sections, links = [], []
 
-        def section(title, sql, parameters=(identity,), attributes=False):
-            rows = self.connection.query(sql, parameters)
+        def section(title, sql, parameters=(identity,), attributes=False, limit=1):
+            rows = self.connection.query(sql + ' LIMIT %s', (*parameters, limit))
+            if limit > 1:
+                title = f'{title}（最多{limit}条）'
             sections.append((title, rows, attributes))
             return rows
 
         with self.connection.snapshot():
             if kind == 'accounts':
                 rows = section('账户', 'SELECT id,username,enabled,created_at FROM accounts WHERE id=%s')
-                section('权限', 'SELECT permission,level FROM account_permissions WHERE account_id=%s ORDER BY permission')
-                section('角色', 'SELECT id,slot,name,revision,saved_at FROM characters WHERE account_id=%s ORDER BY slot')
+                section('权限', 'SELECT permission,level FROM account_permissions WHERE account_id=%s ORDER BY permission', limit=10)
+                section('角色', 'SELECT id,slot,name,revision,saved_at FROM characters WHERE account_id=%s ORDER BY slot', limit=10)
                 if rows:
-                    section('账号封禁', "SELECT reason,expires_at,created_at FROM login_bans WHERE subject_type='account' AND subject=%s", (rows[0]['username'],))
+                    section('账号封禁', "SELECT reason,expires_at,created_at FROM login_bans WHERE subject_type='account' AND subject=%s ORDER BY created_at DESC", (rows[0]['username'],), limit=10)
                 links.append(('查看所属角色', 'characters', ('account_id', identity)))
             elif kind == 'characters':
                 rows = section('角色', 'SELECT c.id,c.account_id,a.username,c.slot,c.name,c.revision,c.saved_at '
                                'FROM characters c JOIN accounts a ON a.id=c.account_id WHERE c.id=%s')
-                section('属性', 'SELECT ordinal,field_key,field_value,numeric_value FROM character_attributes WHERE character_id=%s ORDER BY ordinal', attributes=True)
-                section('已学旧角色技能', 'SELECT slot,skill_id,level AS stored_level,level DIV 100 AS display_level FROM character_skills WHERE character_id=%s ORDER BY slot')
-                section('称号', 'SELECT slot,title_id FROM character_titles WHERE character_id=%s ORDER BY slot')
-                section('指令授权', 'SELECT command_value,remaining_uses FROM character_command_grants WHERE character_id=%s')
+                section('属性', 'SELECT ordinal,field_key,field_value,numeric_value FROM character_attributes WHERE character_id=%s ORDER BY ordinal', attributes=True, limit=10)
+                section('已学旧角色技能', 'SELECT slot,skill_id,level AS stored_level,level DIV 100 AS display_level FROM character_skills WHERE character_id=%s ORDER BY slot', limit=10)
+                section('称号', 'SELECT slot,title_id FROM character_titles WHERE character_id=%s ORDER BY slot', limit=10)
+                section('指令授权', 'SELECT command_value,remaining_uses FROM character_command_grants WHERE character_id=%s ORDER BY command_value', limit=10)
                 if rows:
                     links.append(('查看账户', 'accounts', ('id', rows[0]['account_id'])))
                 links.extend((('查看宠物', 'pets', ('character_id', identity)),
@@ -202,7 +230,7 @@ class Repository:
                 prefix = 'pet' if kind == 'pets' else 'item'
                 rows = section('归属', f'SELECT p.id,p.unique_code,p.character_id,c.name AS owner,p.container,p.slot,p.ordinal '
                                f'FROM {prefix}_instances p LEFT JOIN characters c ON c.id=p.character_id WHERE p.id=%s')
-                attributes = section('实例属性', f'SELECT ordinal,field_key,field_value,numeric_value FROM {prefix}_attributes WHERE instance_id=%s ORDER BY ordinal', attributes=True)
+                attributes = section('实例属性', f'SELECT ordinal,field_key,field_value,numeric_value FROM {prefix}_attributes WHERE instance_id=%s ORDER BY ordinal', attributes=True, limit=10)
                 if rows and rows[0]['character_id'] is not None:
                     links.append(('查看所属角色', 'characters', ('id', rows[0]['character_id'])))
                 if kind == 'items':
@@ -213,9 +241,11 @@ class Repository:
                     skills = self.connection.query(
                         "SELECT a.field_key,a.numeric_value AS legacy_id,s.skill_id,s.name,s.enabled "
                         "FROM pet_attributes a LEFT JOIN skill_definitions s ON s.adapter='pet' AND s.legacy_id=a.numeric_value "
-                        "WHERE a.instance_id=%s AND CAST(a.field_key AS CHAR CHARACTER SET ascii) REGEXP '^psk[0-6]$' ORDER BY a.field_key", (identity,))
-                    sections.append(('宠技编号映射', skills, False))
-                    growth = next((row['numeric_value'] for row in attributes if row['field_key'] == b'pet_growth64'), None)
+                        "WHERE a.instance_id=%s AND CAST(a.field_key AS CHAR CHARACTER SET ascii) REGEXP '^psk[0-6]$' ORDER BY a.field_key LIMIT 10", (identity,))
+                    sections.append(('宠技编号映射（最多10条）', skills, False))
+                    growth_rows = self.connection.query(
+                        "SELECT numeric_value FROM pet_attributes WHERE instance_id=%s AND field_key='pet_growth64' ORDER BY ordinal LIMIT 1", (identity,))
+                    growth = growth_rows[0]['numeric_value'] if growth_rows else None
                     if growth is not None:
                         value = int(growth)
                         sections.append(('成长参数', [dict(zip(('体力', '力量', '耐力', '敏捷', '感知'),
@@ -223,7 +253,15 @@ class Repository:
             elif kind in ('pet_templates', 'item_templates'):
                 table, key = ('pet_base_templates', 'tempno') if kind == 'pet_templates' else ('item_templates', 'id')
                 section('模板字段', f'SELECT * FROM {table} WHERE {key}=%s')
+            elif kind in ('enemy_templates', 'enemy_groups', 'encounter_areas', 'pet_capture_requirements'):
+                title, key = {
+                    'enemy_templates': ('敌人字段', 'id'),
+                    'enemy_groups': ('敌人组合字段', 'id'),
+                    'encounter_areas': ('遇敌区域字段', 'source_order'),
+                    'pet_capture_requirements': ('捕捉条件字段', 'pet_id'),
+                }[kind]
+                section(title, f'SELECT * FROM {kind} WHERE {key}=%s')
             elif kind == 'skills':
                 section('技能字段', 'SELECT * FROM skill_definitions WHERE skill_id=%s')
-                section('配置引用（最多500条）', 'SELECT * FROM skill_references WHERE skill_id=%s ORDER BY source_type,source_key,slot LIMIT 500')
+                section('配置引用', 'SELECT * FROM skill_references WHERE skill_id=%s ORDER BY source_type,source_key,slot', limit=10)
         return {'sections': sections, 'links': links}

@@ -7,11 +7,12 @@ from catalog import CATALOGS, cell, display
 
 
 class Browser(ttk.Frame):
-    def __init__(self, master, app, modes):
+    def __init__(self, master, app, modes, scoped=False):
         super().__init__(master, padding=12)
         self.app = app
         self.modes = modes
         self.kind = modes[0][1]
+        self.scoped = scoped
         self.total = 0
         self.scope = None
         self.rows = {}
@@ -94,7 +95,7 @@ class Browser(ttk.Frame):
         self.search()
 
     def load(self):
-        if not self.app.connected or self.app.busy or (self.kind != 'accounts' and self.scope is None):
+        if not self.app.connected or self.app.busy or (self.scoped and self.scope is None):
             return
         kind, keyword, scope = self.kind, self.keyword.get(), self.scope
         self.info.set('正在查询…')
@@ -173,7 +174,7 @@ class CharacterPanel(ttk.Frame):
             ttk.Label(form, textvariable=value).grid(row=row, column=column * 2 + 1, sticky='w', padx=(0, 28))
         self.refresh = ttk.Button(self, text='刷新角色资料', command=self.search)
         self.refresh.pack(side='left', anchor='n', pady=14)
-        self.detail_button = ttk.Button(self, text='查看完整资料', command=self.detail)
+        self.detail_button = ttk.Button(self, text='查看详情', command=self.detail)
         self.detail_button.pack(side='left', anchor='n', padx=8, pady=14)
         self.set_enabled(False)
 
