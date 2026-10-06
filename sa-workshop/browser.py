@@ -129,7 +129,7 @@ class Browser(ttk.Frame):
                 lines.append('无记录')
             for row in rows:
                 if attributes:
-                    lines.append(f"{display(row['field_key'])}：{display(row['field_value'], escaped=True)}")
+                    lines.append(f"{display(row['field_key'])}：{display(row['field_value'])}")
                 else:
                     lines.extend(f'{key}：{display(value)}' for key, value in row.items())
                 lines.append('')
@@ -174,13 +174,10 @@ class CharacterPanel(ttk.Frame):
             ttk.Label(form, textvariable=value).grid(row=row, column=column * 2 + 1, sticky='w', padx=(0, 28))
         self.refresh = ttk.Button(self, text='刷新角色资料', command=self.search)
         self.refresh.pack(side='left', anchor='n', pady=14)
-        self.detail_button = ttk.Button(self, text='查看详情', command=self.detail)
-        self.detail_button.pack(side='left', anchor='n', padx=8, pady=14)
         self.set_enabled(False)
 
     def set_enabled(self, enabled):
         self.refresh.configure(state='normal' if enabled else 'disabled')
-        self.detail_button.configure(state='normal' if enabled and self.current else 'disabled')
 
     def clear_results(self):
         self.generation += 1
@@ -204,9 +201,3 @@ class CharacterPanel(ttk.Frame):
         for key, variable in self.fields.items():
             variable.set(display(row.get(key)))
         self.info.set('角色资料 · 只读')
-
-    def detail(self):
-        if self.current and self.app.connected and not self.app.busy:
-            identity = self.current['id']
-            self.app.request(self, lambda: self.app.repository.detail('characters', identity),
-                             lambda result: Browser.show_detail(self, result, identity))

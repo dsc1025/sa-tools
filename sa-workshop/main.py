@@ -107,7 +107,7 @@ class Workshop(tk.Tk):
         self.pet_tabs = ttk.Notebook(body)
         body.add(self.pet_tabs, text='宠物')
         for title, kind in (('基板', 'pet_templates'),
-                            ('敌人', 'enemy_templates'), ('敌人组合', 'enemy_groups'),
+                            ('实例', 'enemy_templates'), ('实例组合', 'enemy_groups'),
                             ('遇敌区域', 'encounter_areas'), ('捕捉条件', 'pet_capture_requirements')):
             page = Browser(self.pet_tabs, self, ((title, kind),))
             self.pet_pages.append(page)
@@ -354,7 +354,7 @@ class Workshop(tk.Tk):
                 page.search()
                 break
 
-    def selected_row(self, page, row):
+    def selected_row(self, page, row, refresh=False):
         if page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page):
             return
         if page.kind == 'accounts':
@@ -376,14 +376,16 @@ class Workshop(tk.Tk):
             self.assets_tabs.select(self.pages[1])
         elif page.kind == 'characters':
             identity = row['id']
-            if identity == self.selected_character:
+            changed = identity != self.selected_character
+            if not changed and not refresh:
                 self.pages[1].show_character(row)
                 return
             self.selected_character = identity
             self.pages[1].show_character(row)
             for child in self.pages[2:4]:
                 child.clear_results()
-                child.keyword.set('')
+                if changed:
+                    child.keyword.set('')
                 child.scope = ('character_id', identity)
                 child.info.set('已按选中角色筛选，切换到此页查看。')
         self.update_controls()
@@ -395,11 +397,11 @@ class Workshop(tk.Tk):
     def show_roles(self, rows):
         previous = self.selected_character
         self.role_rows = rows
-        self.role_box.configure(values=[f'{display(row["name"])}（槽位 {row["slot"] + 1}）' for row in rows])
+        self.role_box.configure(values=[f'{display(row["name"])}（槽位 {row["slot"]}）' for row in rows])
         if rows:
             index = next((index for index, row in enumerate(rows) if row['id'] == previous), 0)
             self.role_box.current(index)
-            self.selected_row(self.pages[1], rows[index])
+            self.selected_row(self.pages[1], rows[index], refresh=True)
         else:
             self.role_box.set('')
             self.selected_character = None

@@ -8,7 +8,7 @@ PAGE_SIZE = 50
 
 def display(value, escaped=False):
     if value is None:
-        return '—'
+        return 'NULL'
     if isinstance(value, bytes):
         raw = value
         if escaped:
@@ -65,12 +65,22 @@ class Catalog:
 def instance_catalog(kind):
     name_key = 'name' if kind == 'pet' else 'na'
     name = f"(SELECT field_value FROM {kind}_attributes WHERE instance_id=p.id AND field_key='{name_key}' ORDER BY ordinal LIMIT 1)"
+    if kind == 'pet':
+        nickname = "(SELECT field_value FROM pet_attributes WHERE instance_id=p.id AND field_key='ownt' ORDER BY ordinal LIMIT 1)"
+        name = f"COALESCE(NULLIF({nickname},''),{name})"
     level = f"(SELECT numeric_value FROM {kind}_attributes WHERE instance_id=p.id AND field_key='lv' ORDER BY ordinal LIMIT 1)"
+    identity = 'template_instance_id' if kind == 'pet' else 'id'
+    columns = ((identity, '实例编号'), ('name', '名称'))
+    if kind != 'pet':
+        columns += (('owner', '所属角色'),)
+    columns += (('container', '位置'), ('slot', '槽位'), ('level', '等级'), ('unique_code', '唯一编号'))
     return Catalog(
         f'{kind}_instances p LEFT JOIN characters c ON c.id=p.character_id',
-        f'p.id,p.unique_code,p.character_id,c.name AS owner,p.container,p.slot,{name} AS name,{level} AS level',
-        'p.id', (('id', '实例编号'), ('name', '名称'), ('owner', '所属角色'),
-                 ('container', '位置'), ('slot', '槽位'), ('level', '等级'), ('unique_code', '唯一编号')),
+        f'p.id,p.unique_code,p.character_id,c.name AS owner,p.container,p.slot,{name} AS name,{level} AS level'
+        + (",(SELECT numeric_value FROM pet_attributes WHERE instance_id=p.id "
+           "AND field_key='source_instance_id' ORDER BY ordinal LIMIT 1) AS template_instance_id"
+           if kind == 'pet' else ''),
+        'p.id', columns,
         (name, 'c.name', 'p.unique_code'), True, True,
         (('id', 'p.id'), ('character_id', 'p.character_id')))
 
@@ -120,13 +130,13 @@ CATALOGS = {
     'enemy_templates': Catalog(
         'enemy_templates e LEFT JOIN pet_base_templates p ON p.tempno=e.tempno',
         'e.id,e.name,e.tempno,p.name AS base_name,e.lv_min,e.lv_max,e.exp', 'e.id',
-        (('id', '敌人编号'), ('name', '名称'), ('tempno', '基板编号'), ('base_name', '基板名称'),
+        (('id', '实例编号'), ('name', '名称'), ('tempno', '基板编号'), ('base_name', '基板名称'),
          ('lv_min', '最低等级'), ('lv_max', '最高等级'), ('exp', '经验')),
         ('e.name', 'p.name', 'CAST(e.tempno AS CHAR)'), filters=(('id', 'e.id'),)),
     'enemy_groups': Catalog(
         'enemy_groups g', 'g.id,g.name,g.enemy_id1,g.enemy_id2,g.enemy_id3,g.appearbyitemid,g.notappearbyitemid',
-        'g.id', (('id', '组合编号'), ('name', '名称'), ('enemy_id1', '敌人 1'),
-                 ('enemy_id2', '敌人 2'), ('enemy_id3', '敌人 3'),
+        'g.id', (('id', '组合编号'), ('name', '名称'), ('enemy_id1', '实例 1'),
+                 ('enemy_id2', '实例 2'), ('enemy_id3', '实例 3'),
                  ('appearbyitemid', '出现道具'), ('notappearbyitemid', '排除道具')),
         ('g.name',) + tuple(f'CAST(g.enemy_id{index} AS CHAR)' for index in range(1, 11)),
         filters=(('id', 'g.id'),)),
@@ -134,7 +144,7 @@ CATALOGS = {
         'encounter_areas e', 'e.source_order AS id,e.id AS area_id,e.floor,e.x1,e.y1,e.x2,e.y2,e.enemymaxnum',
         'e.source_order', (('id', '记录序号'), ('area_id', '区域编号'), ('floor', '地图'),
                           ('x1', '起点 X'), ('y1', '起点 Y'), ('x2', '终点 X'), ('y2', '终点 Y'),
-                          ('enemymaxnum', '敌人数上限')),
+                          ('enemymaxnum', '实例数上限')),
         ('CAST(e.id AS CHAR)', 'CAST(e.floor AS CHAR)'), filters=(('id', 'e.source_order'),)),
     'pet_capture_requirements': Catalog(
         'pet_capture_requirements r LEFT JOIN pet_base_templates p ON p.tempno=r.pet_id',
@@ -157,21 +167,7 @@ CATALOGS = {
 
 
 def cell(row, key, catalog):
-    value = row.get(key)
-    if key in ('enabled', 'online'):
-        return '是' if value else '否'
-    if key == 'slot' and value is not None and catalog is not CATALOGS['pet_templates']:
-        return str(value + 1)
-    if key == 'container':
-        if row.get('character_id') is None:
-            return '无归属'
-        if value == 'warehouse':
-            return '仓库'
-        if value == 'carried':
-            if catalog is CATALOGS['items']:
-                return '装备' if row.get('slot') is not None and row['slot'] < 5 else '背包'
-            return '随身'
-    return display(value, escaped=catalog.escaped and key == 'name')
+    return display(row.get(key))
 
 
 class Repository:
@@ -281,8 +277,8 @@ class Repository:
                 section('模板字段', f'SELECT * FROM {table} WHERE {key}=%s')
             elif kind in ('enemy_templates', 'enemy_groups', 'encounter_areas', 'pet_capture_requirements'):
                 title, key = {
-                    'enemy_templates': ('敌人字段', 'id'),
-                    'enemy_groups': ('敌人组合字段', 'id'),
+                    'enemy_templates': ('实例字段', 'id'),
+                    'enemy_groups': ('实例组合字段', 'id'),
                     'encounter_areas': ('遇敌区域字段', 'source_order'),
                     'pet_capture_requirements': ('捕捉条件字段', 'pet_id'),
                 }[kind]
