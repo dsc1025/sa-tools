@@ -5,7 +5,7 @@ import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, ttk
 
-from browser import Browser, CharacterPanel
+from browser import Browser
 from catalog import Repository, display
 from connection import Connection, ConnectionFailure, QueryFailure
 from settings import Profile, Settings
@@ -81,23 +81,19 @@ class Workshop(tk.Tk):
         body.add(players, text='账户')
         players.columnconfigure(0, weight=1)
         players.rowconfigure(0, weight=1)
-        players.rowconfigure(2, weight=3)
+        players.rowconfigure(2, weight=1)
+        players.rowconfigure(3, weight=2)
         account_page = Browser(players, self, (('账户', 'accounts'),))
         account_page.grid(row=0, column=0, sticky='nsew')
         self.pages.append(account_page)
         selection = ttk.Frame(players, padding=(12, 6))
         selection.grid(row=1, column=0, sticky='ew')
         ttk.Label(selection, textvariable=self.context).pack(side='left', padx=(0, 16))
-        ttk.Label(selection, text='角色').pack(side='left')
-        self.role_box = ttk.Combobox(selection, state='disabled', width=28)
-        self.role_box.pack(side='left', padx=8)
-        self.role_box.bind('<<ComboboxSelected>>', self.choose_role)
-        self.role_rows = []
-        self.assets_tabs = ttk.Notebook(players)
-        self.assets_tabs.grid(row=2, column=0, sticky='nsew', padx=12, pady=(0, 12))
-        role_page = CharacterPanel(self.assets_tabs, self)
+        role_page = Browser(players, self, (('角色', 'characters'),), scoped=True)
+        role_page.grid(row=2, column=0, sticky='nsew')
         self.pages.append(role_page)
-        self.assets_tabs.add(role_page, text='角色资料')
+        self.assets_tabs = ttk.Notebook(players)
+        self.assets_tabs.grid(row=3, column=0, sticky='nsew', padx=12, pady=(0, 12))
         modules = (('宠物', (('玩家宠物', 'pets'),)),
                    ('物品', (('玩家物品', 'items'),)))
         for title, modes in modules:
@@ -316,7 +312,6 @@ class Workshop(tk.Tk):
             allowed = (page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page)
                        or page.kind == 'accounts' or page.scope is not None)
             page.set_enabled(self.connected and not self.busy and allowed)
-        self.role_box.configure(state='readonly' if self.connected and not self.busy and self.role_rows else 'disabled')
 
     def tab_changed(self, event=None):
         if not self.connected or self.busy:
@@ -365,23 +360,18 @@ class Workshop(tk.Tk):
             self.account_name = display(row['username'])
             self.context.set(f'账户：{self.account_name}')
             self.selected_character = None
-            self.role_rows = []
-            self.role_box.set('')
-            self.role_box.configure(values=())
             for child in self.pages[1:4]:
                 child.clear_results()
                 child.keyword.set('')
                 child.scope = ('account_id', identity) if child.kind == 'characters' else None
                 child.info.set('请先选择角色。' if child.kind != 'characters' else '已按选中账户筛选。')
-            self.assets_tabs.select(self.pages[1])
         elif page.kind == 'characters':
             identity = row['id']
             changed = identity != self.selected_character
             if not changed and not refresh:
-                self.pages[1].show_character(row)
                 return
             self.selected_character = identity
-            self.pages[1].show_character(row)
+            self.context.set(f'账户：{self.account_name} · 角色：{display(row["name"])}')
             for child in self.pages[2:4]:
                 child.clear_results()
                 if changed:
@@ -396,26 +386,18 @@ class Workshop(tk.Tk):
 
     def show_roles(self, rows):
         previous = self.selected_character
-        self.role_rows = rows
-        self.role_box.configure(values=[f'{display(row["name"])}（槽位 {row["slot"]}）' for row in rows])
         if rows:
             index = next((index for index, row in enumerate(rows) if row['id'] == previous), 0)
-            self.role_box.current(index)
+            tree = self.pages[1].tree
+            tree.selection_set(str(rows[index]['id']))
+            tree.see(str(rows[index]['id']))
             self.selected_row(self.pages[1], rows[index], refresh=True)
         else:
-            self.role_box.set('')
             self.selected_character = None
-            self.pages[1].clear_results()
-            self.pages[1].loaded = True
-            self.pages[1].info.set('此账户没有角色。')
+            self.context.set(f'账户：{self.account_name}')
             for page in self.pages[2:4]:
                 page.clear_results()
                 page.scope = None
-
-    def choose_role(self, event=None):
-        index = self.role_box.current()
-        if 0 <= index < len(self.role_rows):
-            self.selected_row(self.pages[1], self.role_rows[index])
 
     def submit(self, operation, function):
         self.busy = True
@@ -453,6 +435,7 @@ class Workshop(tk.Tk):
                 self.connected = True
                 self.status.set(f'已连接：{self.active_profile.name} · 只读')
                 self.details.set(result)
+                self.notebook.select(self.players)
             elif operation == 'disconnect':
                 self.connected = False
                 self.status.set('未连接 · 当前阶段仅提供只读查询')
@@ -477,9 +460,6 @@ class Workshop(tk.Tk):
                 page.clear_results()
                 page.scope = None
                 page.info.set('请先在设置中连接数据库。')
-            self.role_rows = []
-            self.role_box.set('')
-            self.role_box.configure(values=())
         self.update_controls()
         if self.connected:
             self.after_idle(self.tab_changed)

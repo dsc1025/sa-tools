@@ -117,9 +117,9 @@ CATALOGS = {
     'characters': Catalog(
         'character_summary c JOIN accounts a ON a.id=c.account_id',
         'c.id,c.account_id,a.username,c.name,c.slot,c.level,c.gold,c.bank_gold,c.hp,'
-        'c.map_id,c.x,c.y,c.revision,c.saved_at', 'c.id',
-        (('id', '角色编号'), ('name', '角色名称'), ('username', '账号'), ('slot', '角色槽位'),
-         ('level', '等级'), ('gold', '金币'), ('bank_gold', '银行金币'), ('saved_at', '存档时间')),
+        'c.map_id,c.x,c.y,c.revision,c.saved_at,'
+        "(SELECT numeric_value FROM character_attributes WHERE character_id=c.id AND field_key='memberpoint' ORDER BY ordinal LIMIT 1) AS memberpoint", 'c.id',
+        (('name', '名称'), ('level', '等级'), ('memberpoint', '会员积分'), ('saved_at', '存档时间')),
         ('c.name', 'a.username'), True, filters=(('id', 'c.id'), ('account_id', 'c.account_id'))),
     'pets': instance_catalog('pet'),
     'items': instance_catalog('item'),

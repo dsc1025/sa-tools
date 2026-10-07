@@ -32,22 +32,25 @@ class Browser(ttk.Frame):
             self.mode_box.pack(side='left', padx=(0, 10))
         self.mode_box.bind('<<ComboboxSelected>>', self.change_mode)
         self.search_entry = ttk.Entry(bar, textvariable=self.keyword)
-        self.search_entry.pack(side='left', fill='x', expand=True)
+        if not scoped:
+            self.search_entry.pack(side='left', fill='x', expand=True)
         self.search_entry.bind('<Return>', lambda event: self.search())
-        for label, action in (('搜索 / 刷新', self.search), ('清除筛选', self.clear_filter)):
+        actions = (('刷新', self.search),) if scoped else (('搜索 / 刷新', self.search), ('清除筛选', self.clear_filter))
+        for label, action in actions:
             button = ttk.Button(bar, text=label, command=action)
             button.pack(side='left', padx=(6, 0))
             self.buttons.append(button)
         listing = ttk.Frame(self.content)
         listing.pack(fill='both', expand=True)
-        self.tree = ttk.Treeview(listing, show='headings', selectmode='browse', height=5 if self.kind == 'accounts' else 12)
+        self.tree = ttk.Treeview(listing, show='headings', selectmode='browse', height=5 if self.kind in ('accounts', 'characters') else 12)
         self.tree.grid(row=0, column=0, sticky='nsew')
         vertical = ttk.Scrollbar(listing, orient='vertical', command=self.tree.yview)
         vertical.grid(row=0, column=1, sticky='ns')
         self.tree.configure(yscrollcommand=vertical.set)
         listing.columnconfigure(0, weight=1)
         listing.rowconfigure(0, weight=1)
-        self.tree.bind('<Double-1>', lambda event: self.detail())
+        if self.kind != 'characters':
+            self.tree.bind('<Double-1>', lambda event: self.detail())
         self.tree.bind('<<TreeviewSelect>>', self.selected_row)
         ttk.Label(self.content, textvariable=self.info).pack(anchor='w', pady=(6, 0))
         self.configure_columns()
@@ -97,7 +100,7 @@ class Browser(ttk.Frame):
     def load(self):
         if not self.app.connected or self.app.busy or (self.scoped and self.scope is None):
             return
-        kind, keyword, scope = self.kind, self.keyword.get(), self.scope
+        kind, keyword, scope = self.kind, '' if self.scoped else self.keyword.get(), self.scope
         self.info.set('正在查询…')
         self.app.request(self, lambda: self.app.repository.page(kind, keyword, page=None, scope=scope), self.show_page)
 
@@ -112,6 +115,8 @@ class Browser(ttk.Frame):
                              values=[cell(row, key, CATALOGS[self.kind]) for key, label in CATALOGS[self.kind].columns])
         scope = ' · 关联筛选' if self.scope else ''
         self.info.set(f'共 {self.total} 条{scope}')
+        if self.kind == 'characters':
+            self.app.show_roles(result['rows'])
 
     def detail(self):
         if not self.app.connected or self.app.busy or not self.tree.selection():
