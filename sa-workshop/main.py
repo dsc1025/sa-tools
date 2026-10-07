@@ -433,7 +433,7 @@ class Workshop(tk.Tk):
             result = future.result()
             if operation == 'connect':
                 self.connected = True
-                self.status.set(f'已连接：{self.active_profile.name} · 支持账户编辑')
+                self.status.set(f'已连接：{self.active_profile.name} · 支持账户及角色编辑')
                 self.details.set(result)
                 self.notebook.select(self.players)
             elif operation == 'disconnect':

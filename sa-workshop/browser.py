@@ -5,6 +5,7 @@ from tkinter import ttk
 
 from catalog import CATALOGS, cell, display
 from account_editor import AccountEditor
+from player_editor import PlayerEditor
 
 
 class Browser(ttk.Frame):
@@ -52,8 +53,7 @@ class Browser(ttk.Frame):
         self.tree.configure(yscrollcommand=vertical.set)
         listing.columnconfigure(0, weight=1)
         listing.rowconfigure(0, weight=1)
-        if self.kind != 'characters':
-            self.tree.bind('<Double-1>', lambda event: self.detail())
+        self.tree.bind('<Double-1>', lambda event: self.detail())
         self.tree.bind('<<TreeviewSelect>>', self.selected_row)
         ttk.Label(self.content, textvariable=self.info).pack(anchor='w', pady=(6, 0))
         self.configure_columns()
@@ -131,6 +131,10 @@ class Browser(ttk.Frame):
         if kind == 'accounts':
             self.app.request(self, lambda: self.app.repository.account_form(identity),
                              lambda result: AccountEditor(self, result))
+            return
+        if kind == 'characters':
+            self.app.request(self, lambda: self.app.repository.player_form(kind, identity),
+                             lambda result: PlayerEditor(self, result))
             return
         self.app.request(self, lambda: self.app.repository.detail(kind, identity),
                          lambda result: self.show_detail(result, identity))

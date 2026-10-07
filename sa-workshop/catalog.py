@@ -1,11 +1,59 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from connection import QueryFailure
 
 
 PAGE_SIZE = 50
+CHARACTER_STATS = (b'vi', b'str', b'tou', b'dx')
+CHARACTER_FIELDS = (
+    ((b'name', '名称'), (b'lv', '等级'), (b'nexp', '经验'), (b'trn', '转生次数'),
+     (b'memberpoint', '会员积分'), (b'vipride', '会员标记'), (b'gld', '金币'),
+     (b'bankgld', '银行金币'), (b'hp', '当前生命'), (b'mp', '当前魔力'),
+     (b'bi', '当前形象编号'), (b'bbi', '基础形象编号'), (b'fb', '头像编号'),
+     (b'ownt', '自定义称号'), (b'ieqt', '佩戴称号槽位'), (b'duel', 'DP（决斗积分）')),
+    ((b'vi', '体力'), (b'str', '腕力'), (b'tou', '耐力'), (b'dx', '速度'),
+     (b'perception', '感知'), (b'chr', '魅力'), (b'luc', '运气'),
+     (b'skup', '剩余属性点'), (b'mmp', '最大魔力'),
+     (b'aea', '地属性'), (b'awa', '水属性'), (b'afi', '火属性'), (b'awi', '风属性')),
+)
+
+
+def character_value(row):
+    if row['field_key'] in CHARACTER_STATS:
+        try:
+            raw = int(row['field_value'])
+            return str(raw // 100 if raw >= 0 else -(-raw // 100))
+        except (ValueError, TypeError):
+            pass
+    return display(row['field_value'])
+
+
+def character_points(original, values):
+    rows = {}
+    for row in original['attributes']:
+        if row['field_key'] in (*CHARACTER_STATS, b'skup'):
+            if row['field_key'] in rows:
+                raise ValueError('属性记录重复，请先检查存档。')
+            rows[row['field_key']] = row
+    if len(rows) != 5:
+        raise ValueError('四项属性或剩余属性点记录缺失，无法分配点数。')
+    remaining = int(rows[b'skup']['field_value'])
+    for key in CHARACTER_STATS:
+        row = rows[key]
+        raw = int(row['field_value'])
+        text = values.get(row['ordinal'], character_value(row))
+        if raw < 0 or not re.fullmatch(r'[0-9]+', text):
+            raise ValueError('四项属性必须为非负整数点数。')
+        delta = int(text) - raw // 100
+        if not 0 <= raw + delta * 100 < (1 << 31):
+            raise ValueError('属性超出服务器可保存的范围。')
+        remaining -= delta
+    if not 0 <= remaining < (1 << 31):
+        raise ValueError('剩余属性点不足，请减少分配或先从其他属性退回点数。')
+    return rows[b'skup'], remaining
 
 
 def display(value, escaped=False):
@@ -216,6 +264,124 @@ class Repository:
                         (gm_level, identity))
             result = self.account(identity)
         return result
+
+    def player_record(self, kind, identity, locked=False):
+        suffix = ' FOR UPDATE' if locked else ''
+        if kind == 'characters':
+            rows = self.connection.query(
+                'SELECT id,account_id,slot,name,revision,saved_at FROM characters WHERE id=%s LIMIT 1' + suffix,
+                (identity,))
+            if not rows:
+                raise QueryFailure('角色已不存在，请刷新列表。')
+            return {'character': rows[0], 'instance': None}
+        raise ValueError('只有角色支持属性编辑。')
+
+    def player_attributes(self, kind, identity, locked=False):
+        if kind != 'characters':
+            raise ValueError('只有角色支持属性编辑。')
+        keys = tuple(key for group in CHARACTER_FIELDS for key, label in group)
+        placeholders = ','.join('%s' for key in keys)
+        return self.connection.query(
+            'SELECT ordinal,field_key,field_value,numeric_value FROM character_attributes '
+            f'WHERE character_id=%s AND field_key IN ({placeholders}) '
+            f'ORDER BY FIELD(field_key,{placeholders}),ordinal' + (' FOR UPDATE' if locked else ''),
+            (identity, *keys, *keys))
+
+    def player_form(self, kind, identity):
+        if kind != 'characters':
+            raise ValueError('无效的编辑记录。')
+        with self.connection.snapshot():
+            record = self.player_record(kind, identity)
+            attributes = self.player_attributes(kind, identity)
+        return {'kind': kind, 'id': identity, **record, 'attributes': attributes}
+
+    @staticmethod
+    def attribute_editable(kind, row):
+        key = row['field_key']
+        if key in (b'lv', b'trn', b'skup'):
+            return False
+        if kind != 'characters' or key not in dict(field for group in CHARACTER_FIELDS for field in group):
+            return False
+        if key in (b'name', b'ownt'):
+            return True
+        return row['numeric_value'] is not None
+
+    def save_player(self, original, values):
+        kind, identity = original['kind'], original['id']
+        if kind != 'characters':
+            raise ValueError('只有角色支持属性编辑。')
+        labels = dict(field for group in CHARACTER_FIELDS for field in group)
+        changes = []
+        for row in original['attributes']:
+            ordinal = row['ordinal']
+            if ordinal not in values:
+                continue
+            text = values[ordinal]
+            if text == character_value(row):
+                continue
+            if row['field_key'] in CHARACTER_STATS:
+                if not re.fullmatch(r'[0-9]+', text):
+                    raise ValueError(f'{labels[row["field_key"]]}必须为非负整数点数。')
+                raw = int(row['field_value'])
+                text = str(raw + (int(text) - raw // 100) * 100)
+            try:
+                value = text.encode('gbk')
+            except UnicodeEncodeError:
+                raise ValueError(f'{labels[row["field_key"]]}包含GBK无法保存的字符。') from None
+            if value == row['field_value']:
+                continue
+            if not self.attribute_editable(kind, row):
+                raise ValueError('该字段不允许修改。')
+            key = row['field_key']
+            numeric = None
+            if key in (b'name', b'ownt'):
+                if any(char in text for char in ('|', '\n', '\r', '\x00')):
+                    raise ValueError('名称中的分隔符和换行须使用存档转义格式。')
+                if len(display(value, escaped=True).encode('gbk')) > 63:
+                    raise ValueError('名称最多63个GBK字节。')
+                if kind == 'characters' and key == b'name' and not value:
+                    raise ValueError('角色名称不能为空。')
+                if re.fullmatch(r'[+-]?[0-9]+', text):
+                    number = int(text)
+                    if -(1 << 63) <= number < (1 << 63):
+                        numeric = number
+            else:
+                if not re.fullmatch(r'[+-]?[0-9]+', text):
+                    raise ValueError(f'{labels[key]}必须为整数。')
+                numeric = int(text)
+                if not -(1 << 31) <= numeric < (1 << 31):
+                    raise ValueError(f'{labels[key]}超出服务器可保存的范围。')
+            changes.append((row, value, numeric))
+        if not changes:
+            return original
+        if any(row['field_key'] in CHARACTER_STATS for row, value, numeric in changes):
+            points, remaining = character_points(original, values)
+            if remaining != int(points['field_value']):
+                changes.append((points, str(remaining).encode('ascii'), remaining))
+        with self.connection.transaction():
+            account_id = original['character']['account_id']
+            accounts = self.connection.query('SELECT id FROM accounts WHERE id=%s LIMIT 1 FOR UPDATE', (account_id,))
+            if not accounts:
+                raise QueryFailure('所属账户已不存在。')
+            sessions = self.connection.query('SELECT account_id FROM login_sessions WHERE account_id=%s LIMIT 1 FOR UPDATE', (account_id,))
+            if sessions:
+                raise QueryFailure('所属账户有登录会话，请退出游戏后再保存。')
+            current = self.player_record(kind, identity, locked=True)
+            attributes = self.player_attributes(kind, identity, locked=True)
+            if current != {'character': original['character'], 'instance': original['instance']} or attributes != original['attributes']:
+                raise QueryFailure('记录已被其他操作修改，请重新打开表单。')
+            for row, value, numeric in changes:
+                self.connection.write(
+                    'UPDATE character_attributes SET field_value=%s,numeric_value=%s WHERE character_id=%s AND ordinal=%s',
+                    (value, numeric, identity, row['ordinal']))
+                if kind == 'characters' and row['field_key'] == b'name':
+                    self.connection.write('UPDATE characters SET name=%s WHERE id=%s',
+                                          (display(value, escaped=True).encode('gbk'), identity))
+            self.connection.write('UPDATE characters SET revision=revision+1,saved_at=CURRENT_TIMESTAMP(6) WHERE id=%s',
+                                  (original['character']['id'],))
+            record = self.player_record(kind, identity)
+            attributes = self.player_attributes(kind, identity)
+        return {'kind': kind, 'id': identity, **record, 'attributes': attributes}
 
     def page(self, kind, keyword, page=0, scope=None):
         catalog = CATALOGS[kind]
