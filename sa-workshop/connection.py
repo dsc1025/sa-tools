@@ -151,6 +151,47 @@ class Connection:
             raise QueryFailure(f'查询失败（错误码：{code or "未知"}），请检查表结构和查询权限。') from None
 
     @contextmanager
+    def transaction(self):
+        if self.mysql is None:
+            raise ConnectionFailure('请先连接数据库。')
+        try:
+            with self.mysql.cursor() as cursor:
+                cursor.execute('START TRANSACTION READ WRITE')
+        except Exception:
+            self.check()
+            raise QueryFailure('无法开始保存，请检查数据库写入权限。') from None
+        try:
+            yield
+            try:
+                self.mysql.commit()
+            except Exception:
+                self.disconnect()
+                raise ConnectionFailure('保存提交时连接异常，请重新连接并读取数据确认结果，不要直接重复保存。') from None
+        except Exception:
+            if self.mysql is not None:
+                try:
+                    self.mysql.rollback()
+                except Exception:
+                    self.disconnect()
+            raise
+
+    def write(self, sql, parameters):
+        if not sql.lstrip().upper().startswith(('UPDATE ', 'INSERT ')):
+            raise QueryFailure('不支持此保存操作。')
+        if self.mysql is None:
+            raise ConnectionFailure('请先连接数据库。')
+        try:
+            with self.mysql.cursor() as cursor:
+                cursor.execute(sql, parameters)
+                return cursor.rowcount
+        except Exception as exc:
+            code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+            if code in (2006, 2013, 2055):
+                self.disconnect()
+                raise ConnectionFailure('保存期间连接断开，请重新连接并读取数据确认结果。') from None
+            raise QueryFailure(f'保存失败（错误码：{code or "未知"}），请检查字段值、关联约束和写入权限。') from None
+
+    @contextmanager
     def snapshot(self):
         if self.mysql is None:
             raise ConnectionFailure('请先连接数据库。')

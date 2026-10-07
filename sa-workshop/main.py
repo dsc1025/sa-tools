@@ -42,7 +42,7 @@ class Workshop(tk.Tk):
                        for name, value in vars(Profile()).items()}
         self.ssh_secret = self.values['ssh_secret']
         self.mysql_password = self.values['mysql_password']
-        self.status = tk.StringVar(value='未连接 · 当前阶段仅提供只读查询')
+        self.status = tk.StringVar(value='未连接')
         self.details = tk.StringVar(value='连接后显示数据库信息。')
         self.controls = []
         self.build_ui()
@@ -89,7 +89,7 @@ class Workshop(tk.Tk):
         selection = ttk.Frame(players, padding=(12, 6))
         selection.grid(row=1, column=0, sticky='ew')
         ttk.Label(selection, textvariable=self.context).pack(side='left', padx=(0, 16))
-        role_page = Browser(players, self, (('角色', 'characters'),), scoped=True)
+        role_page = Browser(players, self, (('角色', 'characters'),), scoped=True, refresh_parent=selection)
         role_page.grid(row=2, column=0, sticky='nsew')
         self.pages.append(role_page)
         self.assets_tabs = ttk.Notebook(players)
@@ -381,8 +381,8 @@ class Workshop(tk.Tk):
         self.update_controls()
         self.after_idle(self.tab_changed)
 
-    def request(self, page, function, callback):
-        self.submit(('query', page, callback, page.generation), function)
+    def request(self, page, function, callback, on_error=None):
+        self.submit(('query', page, callback, page.generation, on_error), function)
 
     def show_roles(self, rows):
         previous = self.selected_character
@@ -433,17 +433,19 @@ class Workshop(tk.Tk):
             result = future.result()
             if operation == 'connect':
                 self.connected = True
-                self.status.set(f'已连接：{self.active_profile.name} · 只读')
+                self.status.set(f'已连接：{self.active_profile.name} · 支持账户编辑')
                 self.details.set(result)
                 self.notebook.select(self.players)
             elif operation == 'disconnect':
                 self.connected = False
-                self.status.set('未连接 · 当前阶段仅提供只读查询')
+                self.status.set('未连接')
                 self.details.set('SSH 隧道和数据库连接已关闭。')
             elif isinstance(operation, tuple) and operation[0] == 'query':
                 if operation[3] == operation[1].generation:
                     operation[2](result)
         except Exception as exc:
+            if isinstance(operation, tuple) and operation[0] == 'query' and operation[4] is not None:
+                operation[4](exc)
             if isinstance(operation, tuple) and operation[0] == 'query' and not isinstance(exc, ConnectionFailure):
                 if operation[3] == operation[1].generation:
                     operation[1].loaded = True

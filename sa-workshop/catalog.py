@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from connection import QueryFailure
+
 
 PAGE_SIZE = 50
 
@@ -173,6 +175,47 @@ def cell(row, key, catalog):
 class Repository:
     def __init__(self, connection):
         self.connection = connection
+
+    def account(self, identity, locked=False):
+        suffix = ' FOR UPDATE' if locked else ''
+        rows = self.connection.query(
+            'SELECT id,username,enabled,created_at FROM accounts WHERE id=%s LIMIT 1' + suffix, (identity,))
+        if not rows:
+            raise QueryFailure('账户已不存在，请刷新列表。')
+        permissions = self.connection.query(
+            "SELECT level FROM account_permissions WHERE account_id=%s AND permission='gm.level' LIMIT 1" + suffix,
+            (identity,))
+        return {**rows[0], 'gm_level': permissions[0]['level'] if permissions else None}
+
+    def account_form(self, identity):
+        with self.connection.snapshot():
+            return self.account(identity)
+
+    def save_account(self, original, enabled, gm_level):
+        if type(enabled) is not int or enabled not in (0, 1):
+            raise ValueError('启用状态必须为0或1。')
+        if gm_level is not None and (type(gm_level) is not int or not 0 <= gm_level <= 4):
+            raise ValueError('GM等级必须在0到4之间。')
+        if gm_level is None and original['gm_level'] is not None:
+            raise ValueError('不能将已有GM等级改为空值。')
+        identity = original['id']
+        with self.connection.transaction():
+            current = self.account(identity, locked=True)
+            if current != original:
+                raise QueryFailure('账户已被其他操作修改，请关闭表单并重新打开后再保存。')
+            if enabled != current['enabled']:
+                self.connection.write('UPDATE accounts SET enabled=%s WHERE id=%s', (enabled, identity))
+            if gm_level != current['gm_level']:
+                if current['gm_level'] is None:
+                    self.connection.write(
+                        'INSERT INTO account_permissions(account_id,permission,level) VALUES(%s,%s,%s)',
+                        (identity, 'gm.level', gm_level))
+                else:
+                    self.connection.write(
+                        "UPDATE account_permissions SET level=%s WHERE account_id=%s AND permission='gm.level'",
+                        (gm_level, identity))
+            result = self.account(identity)
+        return result
 
     def page(self, kind, keyword, page=0, scope=None):
         catalog = CATALOGS[kind]

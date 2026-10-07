@@ -4,10 +4,11 @@ import tkinter as tk
 from tkinter import ttk
 
 from catalog import CATALOGS, cell, display
+from account_editor import AccountEditor
 
 
 class Browser(ttk.Frame):
-    def __init__(self, master, app, modes, scoped=False):
+    def __init__(self, master, app, modes, scoped=False, refresh_parent=None):
         super().__init__(master, padding=12)
         self.app = app
         self.modes = modes
@@ -25,7 +26,8 @@ class Browser(ttk.Frame):
         self.content = ttk.Frame(self)
         self.content.pack(fill='both', expand=True)
         bar = ttk.Frame(self.content)
-        bar.pack(fill='x', pady=(0, 10))
+        if refresh_parent is None:
+            bar.pack(fill='x', pady=(0, 10))
         self.mode_box = ttk.Combobox(bar, values=[label for label, kind in modes],
                                      textvariable=self.mode, state='readonly', width=12)
         if len(modes) > 1:
@@ -37,7 +39,8 @@ class Browser(ttk.Frame):
         self.search_entry.bind('<Return>', lambda event: self.search())
         actions = (('刷新', self.search),) if scoped else (('搜索 / 刷新', self.search), ('清除筛选', self.clear_filter))
         for label, action in actions:
-            button = ttk.Button(bar, text=label, command=action)
+            button = ttk.Button(refresh_parent if refresh_parent is not None else bar,
+                                text='刷新角色' if refresh_parent is not None else label, command=action)
             button.pack(side='left', padx=(6, 0))
             self.buttons.append(button)
         listing = ttk.Frame(self.content)
@@ -117,12 +120,18 @@ class Browser(ttk.Frame):
         self.info.set(f'共 {self.total} 条{scope}')
         if self.kind == 'characters':
             self.app.show_roles(result['rows'])
+        elif self.kind == 'accounts' and str(self.app.selected_account) in self.rows:
+            self.tree.selection_set(str(self.app.selected_account))
 
     def detail(self):
         if not self.app.connected or self.app.busy or not self.tree.selection():
             return
         identity = self.rows[self.tree.selection()[0]]['id']
         kind = self.kind
+        if kind == 'accounts':
+            self.app.request(self, lambda: self.app.repository.account_form(identity),
+                             lambda result: AccountEditor(self, result))
+            return
         self.app.request(self, lambda: self.app.repository.detail(kind, identity),
                          lambda result: self.show_detail(result, identity))
 
