@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from catalog import CATALOGS, cell, display
+from cache import CACHED_KINDS
 from account_editor import AccountEditor
 from player_editor import PlayerEditor
 
@@ -39,6 +40,9 @@ class Browser(ttk.Frame):
             self.search_entry.pack(side='left', fill='x', expand=True)
         self.search_entry.bind('<Return>', lambda event: self.search())
         actions = (('刷新', self.search),) if scoped else (('搜索 / 刷新', self.search), ('清除筛选', self.clear_filter))
+        if self.kind in CACHED_KINDS:
+            actions = (('搜索', self.search), ('清除筛选', self.clear_filter),
+                       ('更新本地缓存', lambda: self.load(refresh=True)))
         for label, action in actions:
             button = ttk.Button(refresh_parent if refresh_parent is not None else bar,
                                 text='刷新角色' if refresh_parent is not None else label, command=action)
@@ -100,12 +104,13 @@ class Browser(ttk.Frame):
             self.scope = None
         self.search()
 
-    def load(self):
+    def load(self, refresh=False):
         if not self.app.connected or self.app.busy or (self.scoped and self.scope is None):
             return
         kind, keyword, scope = self.kind, '' if self.scoped else self.keyword.get(), self.scope
         self.info.set('正在查询…')
-        self.app.request(self, lambda: self.app.repository.page(kind, keyword, page=None, scope=scope), self.show_page)
+        self.app.request(self, lambda: self.app.repository.page(kind, keyword, page=None, scope=scope,
+                                                                refresh=refresh), self.show_page)
 
     def show_page(self, result):
         self.clear_results()
@@ -117,7 +122,8 @@ class Browser(ttk.Frame):
             self.tree.insert('', 'end', iid=identity,
                              values=[cell(row, key, CATALOGS[self.kind]) for key, label in CATALOGS[self.kind].columns])
         scope = ' · 关联筛选' if self.scope else ''
-        self.info.set(f'共 {self.total} 条{scope}')
+        cached = ' · 优先使用本地缓存，数据变更后请更新缓存' if self.kind in CACHED_KINDS else ''
+        self.info.set(f'共 {self.total} 条{scope}{cached}')
         if self.kind == 'characters':
             self.app.show_roles(result['rows'])
         elif self.kind == 'accounts' and str(self.app.selected_account) in self.rows:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 
 from connection import QueryFailure
+from cache import CACHED_KINDS, CatalogCache
 
 
 PAGE_SIZE = 50
@@ -223,6 +224,10 @@ def cell(row, key, catalog):
 class Repository:
     def __init__(self, connection):
         self.connection = connection
+        self.cache = None
+
+    def configure_cache(self, profile):
+        self.cache = CatalogCache(profile)
 
     def account(self, identity, locked=False):
         suffix = ' FOR UPDATE' if locked else ''
@@ -383,7 +388,14 @@ class Repository:
             attributes = self.player_attributes(kind, identity)
         return {'kind': kind, 'id': identity, **record, 'attributes': attributes}
 
-    def page(self, kind, keyword, page=0, scope=None):
+    def page(self, kind, keyword, page=0, scope=None, refresh=False):
+        if self.cache is not None and kind in CACHED_KINDS:
+            key = ['page', repr(CATALOGS[kind]), keyword.strip(), page, scope]
+            return self.cache.result(kind, key,
+                                     lambda: self.query_page(kind, keyword, page, scope), refresh)
+        return self.query_page(kind, keyword, page, scope)
+
+    def query_page(self, kind, keyword, page=0, scope=None):
         catalog = CATALOGS[kind]
         conditions, parameters = [], []
         keyword = keyword.strip()
@@ -423,6 +435,12 @@ class Repository:
         return {'rows': rows, 'total': total, 'page': page}
 
     def detail(self, kind, identity):
+        if self.cache is not None and kind in CACHED_KINDS:
+            return self.cache.result(kind, ['detail', repr(CATALOGS[kind]), identity],
+                                     lambda: self.query_detail(kind, identity))
+        return self.query_detail(kind, identity)
+
+    def query_detail(self, kind, identity):
         sections, links = [], []
 
         def section(title, sql, parameters=(identity,), attributes=False, limit=1):

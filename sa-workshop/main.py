@@ -432,6 +432,7 @@ class Workshop(tk.Tk):
         try:
             result = future.result()
             if operation == 'connect':
+                self.repository.configure_cache(self.active_profile)
                 self.connected = True
                 self.status.set(f'已连接：{self.active_profile.name} · 支持账户及角色编辑')
                 self.details.set(result)

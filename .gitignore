@@ -5,3 +5,4 @@ exports
 diagnostic_deps
 CG_SPRS
 *.json
+cache
