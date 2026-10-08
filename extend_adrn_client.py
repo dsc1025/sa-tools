@@ -26,9 +26,6 @@ IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080
 IMAGE_SCN_MEM_READ = 0x40000000
 IMAGE_SCN_MEM_WRITE = 0x80000000
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SOURCE = PROJECT_ROOT / "sa-client" / "SA2.5" / "sa_2903.exe"
-DEFAULT_OUTPUT = DEFAULT_SOURCE.with_name("sa_2903.expanded.exe")
 DEFAULT_SERVER_IP = "127.0.0.1"
 DEFAULT_SERVER_PORT = 9065
 DEFAULT_SERVER_NAME = "StoneAge"
@@ -381,12 +378,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Expand a Stone Age 2.5 client and configure its server"
     )
-    parser.add_argument("source", nargs="?", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("output", nargs="?", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("source", type=Path, help="原始客户端 sa_2903.exe 的路径（必填）")
     parser.add_argument("--capacity", type=int, default=1_000_000)
     args = parser.parse_args()
     if not args.source.is_file():
-        parser.error(f"找不到原始客户端: {args.source}；请通过 source 参数指定 sa_2903.exe")
+        parser.error(f"找不到原始客户端: {args.source}")
+    output = args.source.with_name("sa_2903.expanded.exe")
+    if args.source.resolve() == output.resolve():
+        parser.error("请指定未扩容的原始客户端 sa_2903.exe")
+    if output.exists():
+        if not output.is_file():
+            parser.error(f"输出路径不是文件: {output}")
+        while True:
+            overwrite = input(f"文件已存在: {output}，是否覆盖？[Y/n]: ").strip().lower()
+            if overwrite in ("", "y", "yes"):
+                break
+            if overwrite in ("n", "no"):
+                print("已取消生成。")
+                return
+            print("请输入 Y 或 n。")
 
     try:
         server_ip_text = input(f"服务器 IP [{DEFAULT_SERVER_IP}]: ").strip()
@@ -405,7 +415,7 @@ def main() -> None:
         server_name = DEFAULT_SERVER_NAME
 
     try:
-        result = patch_client(args.source, args.output, args.capacity, server_ip, port, server_name)
+        result = patch_client(args.source, output, args.capacity, server_ip, port, server_name)
     except ValueError as error:
         parser.error(str(error))
     for key, value in result.items():
