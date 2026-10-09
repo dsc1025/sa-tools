@@ -7,6 +7,7 @@ from catalog import CATALOGS, cell, display
 from cache import CACHED_KINDS
 from account_editor import AccountEditor
 from player_editor import PlayerEditor
+from template_editor import TemplateEditor
 
 
 class Browser(ttk.Frame):
@@ -141,6 +142,10 @@ class Browser(ttk.Frame):
         if kind == 'characters':
             self.app.request(self, lambda: self.app.repository.player_form(kind, identity),
                              lambda result: PlayerEditor(self, result))
+            return
+        if kind == 'pet_templates':
+            self.app.request(self, lambda: self.app.repository.pet_template_form(identity),
+                             lambda result: TemplateEditor(self, result))
             return
         self.app.request(self, lambda: self.app.repository.detail(kind, identity),
                          lambda result: self.show_detail(result, identity))

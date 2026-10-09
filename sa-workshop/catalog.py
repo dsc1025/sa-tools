@@ -7,6 +7,35 @@ from connection import QueryFailure
 from cache import CACHED_KINDS, CatalogCache
 
 
+PET_TEMPLATE_FIELDS = {
+    'name': ('宠物默认名称。', None, None),
+    'initnum': ('初始能力计算倍率。', 0, 2147483647),
+    'lvuppoint': ('等级成长倍率，不是可分配点数。', 0, 2147483647),
+    'basevital': ('体力基础成长参数，0～255。', 0, 255),
+    'basestr': ('腕力基础成长参数，0～255。', 0, 255),
+    'basetgh': ('耐力基础成长参数，0～255。', 0, 255),
+    'basedex': ('速度基础成长参数，0～255。', 0, 255),
+    'baseper': ('隐藏感知成长参数，0表示不参与随机成长分配。', 0, 255),
+    'modai': ('忠诚计算系数，同等条件下越大忠诚越低。', -2147483648, 2147483647),
+    'get': ('捕捉基础加成，不是捕捉成功率。', -2147483648, 2147483647),
+    'earthat': ('地属性原始值。', -2147483648, 2147483647),
+    'waterat': ('水属性原始值。', -2147483648, 2147483647),
+    'fireat': ('火属性原始值。', -2147483648, 2147483647),
+    'windat': ('风属性原始值。', -2147483648, 2147483647),
+    'poison': ('毒抗性修正。', -2147483648, 2147483647),
+    'paralysis': ('麻痹抗性修正。', -2147483648, 2147483647),
+    'sleep': ('睡眠抗性修正。', -2147483648, 2147483647),
+    'stone': ('石化抗性修正。', -2147483648, 2147483647),
+    'drunk': ('酒醉抗性修正。', -2147483648, 2147483647),
+    'confusion': ('混乱抗性修正。', -2147483648, 2147483647),
+    'rare': ('稀有度分类，参与出售价格等计算。', -2147483648, 2147483647),
+    'slot': ('技能槽数，0～7。', 0, 7),
+    'imgnumber': ('基础形象编号，需对应有效资源。', 0, 2147483647),
+    'size': ('体型分类：0普通，1大型。', 0, 1),
+    'limitlevel': ('单独等级限制；正数启用，仍受全局等级上限约束。', -2147483648, 2147483647),
+}
+
+
 PAGE_SIZE = 50
 CHARACTER_STATS = (b'vi', b'str', b'tou', b'dx')
 CHARACTER_FIELDS = (
@@ -434,11 +463,65 @@ class Repository:
                                              (*parameters, PAGE_SIZE, page * PAGE_SIZE))
         return {'rows': rows, 'total': total, 'page': page}
 
+    def pet_template_form(self, identity):
+        with self.connection.snapshot():
+            rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1', (identity,))
+        if not rows:
+            raise QueryFailure('基板已不存在，请刷新列表。')
+        return rows[0]
+
+    def save_pet_template(self, original, values):
+        changes = {}
+        for key, text in values.items():
+            if key not in PET_TEMPLATE_FIELDS or key not in original:
+                raise ValueError('包含不可修改的基板字段。')
+            if text == display(original[key]):
+                continue
+            meaning, minimum, maximum = PET_TEMPLATE_FIELDS[key]
+            if key == 'name':
+                if not text or chr(0) in text:
+                    raise ValueError('名称不能为空或包含空字符。')
+                try:
+                    encoded = text.encode('gbk')
+                except UnicodeEncodeError:
+                    raise ValueError('名称包含服务端 GBK 不支持的字符。') from None
+                if len(encoded) >= 64:
+                    raise ValueError('名称按 GBK 编码后必须少于64字节。')
+                value = encoded if isinstance(original[key], bytes) else text
+            else:
+                if not re.fullmatch(r'-?[0-9]+', text):
+                    raise ValueError(f'{key} 必须为整数。')
+                value = int(text)
+                if not minimum <= value <= maximum:
+                    raise ValueError(f'{key} 必须在 {minimum} 到 {maximum} 之间。')
+            changes[key] = value
+        with self.connection.transaction():
+            rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1 FOR UPDATE',
+                                         (original['tempno'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('基板已被其他操作修改，请关闭表单并重新打开。')
+            if changes:
+                assignments = ','.join(f'`{key}`=%s' for key in changes)
+                self.connection.write(f'UPDATE pet_base_templates SET {assignments} WHERE tempno=%s',
+                                      (*changes.values(), original['tempno']))
+            result = {**rows[0], **changes}
+        return result
+
     def detail(self, kind, identity):
         if self.cache is not None and kind in CACHED_KINDS:
-            return self.cache.result(kind, ['detail', repr(CATALOGS[kind]), identity],
-                                     lambda: self.query_detail(kind, identity))
-        return self.query_detail(kind, identity)
+            result = self.cache.result(kind, ['detail', repr(CATALOGS[kind]), identity],
+                                       lambda: self.query_detail(kind, identity))
+        else:
+            result = self.query_detail(kind, identity)
+        if kind == 'pet_templates':
+            hidden = tuple(f'{prefix}{index}' for prefix in
+                           ('atomfixname', 'atombaseadd', 'atomfixmin', 'atomfixmax')
+                           for index in range(1, 6))
+            result = {**result, 'sections': [
+                (title, [{key: value for key, value in row.items() if key not in hidden}
+                         for row in rows], attributes)
+                for title, rows, attributes in result['sections']]}
+        return result
 
     def query_detail(self, kind, identity):
         sections, links = [], []
