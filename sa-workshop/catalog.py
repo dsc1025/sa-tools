@@ -9,8 +9,8 @@ from cache import CACHED_KINDS, CatalogCache
 
 PET_TEMPLATE_FIELDS = {
     'name': ('宠物默认名称。', None, None),
-    'initnum': ('初始能力计算倍率。', 0, 2147483647),
-    'lvuppoint': ('等级成长倍率，不是可分配点数。', 0, 2147483647),
+    'initnum': ('初始能力计算倍率。', 0, 2147483647 // 265),
+    'lvuppoint': ('等级成长倍率，不是可分配点数。', 0, 2147483647 // 265),
     'basevital': ('体力基础成长参数，0～255。', 0, 255),
     'basestr': ('腕力基础成长参数，0～255。', 0, 255),
     'basetgh': ('耐力基础成长参数，0～255。', 0, 255),
@@ -34,6 +34,11 @@ PET_TEMPLATE_FIELDS = {
     'size': ('体型分类：0普通，1大型。', 0, 1),
     'limitlevel': ('单独等级限制；正数启用，仍受全局等级上限约束。', -2147483648, 2147483647),
 }
+
+PET_TEMPLATE_FIELDS.update({
+    f'pet_skill_id{index}': ('默认技能统一编号：0为空，NULL使用旧编号。', 0, 2147483647)
+    for index in range(1, 8)
+})
 
 
 PAGE_SIZE = 50
@@ -466,9 +471,19 @@ class Repository:
     def pet_template_form(self, identity):
         with self.connection.snapshot():
             rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1', (identity,))
+            skills = self.connection.query(
+                "SELECT skill_id,name,adapter FROM skill_definitions WHERE enabled=1 "
+                "AND legacy_id IS NOT NULL AND legacy_id>=0 AND ((adapter='pet' AND legacy_id<1073741824) "
+                "OR (adapter='magic' AND skill_id<1073741824 AND legacy_id<=65535 "
+                "AND field_type<>2 "
+                "AND ((function_name='MAGIC_AttMagic' AND dead_target=0 AND target_type IN (1,4,8,9,10,11)) "
+                "OR (function_name<>'MAGIC_AttMagic' AND target_type IN (0,1,2,3,4,8,9) "
+                "AND NOT (function_name='MAGIC_Recovery' AND target_type=4))) "
+                "AND function_name IN ('MAGIC_AttMagic','MAGIC_Recovery','MAGIC_OtherRecovery',"
+                "'MAGIC_StatusRecovery','MAGIC_Ressurect'))) ORDER BY skill_id")
         if not rows:
             raise QueryFailure('基板已不存在，请刷新列表。')
-        return rows[0]
+        return {'template': rows[0], 'skills': skills}
 
     def save_pet_template(self, original, values):
         changes = {}
@@ -478,7 +493,9 @@ class Repository:
             if text == display(original[key]):
                 continue
             meaning, minimum, maximum = PET_TEMPLATE_FIELDS[key]
-            if key == 'name':
+            if key.startswith('pet_skill_id') and text == 'NULL':
+                value = None
+            elif key == 'name':
                 if not text or chr(0) in text:
                     raise ValueError('名称不能为空或包含空字符。')
                 try:
@@ -500,12 +517,97 @@ class Repository:
                                          (original['tempno'],))
             if not rows or rows[0] != original:
                 raise QueryFailure('基板已被其他操作修改，请关闭表单并重新打开。')
+            if {'initnum', 'lvuppoint'} & changes.keys():
+                updated = {**rows[0], **changes}
+                levels = self.connection.query(
+                    'SELECT lv_min,lv_max FROM enemy_templates WHERE tempno=%s FOR UPDATE',
+                    (original['tempno'],))
+                max_level = max([1] + [int(row[key]) for row in levels
+                                       for key in ('lv_min', 'lv_max')])
+                # Growth is clamped to 255, then receives up to 10 random points.
+                multiplier = (max_level - 1) * int(updated['lvuppoint']) + int(updated['initnum'])
+                if (int(updated['initnum']) < 0 or int(updated['lvuppoint']) < 0
+                        or multiplier > 2147483647 // 265):
+                    raise ValueError('初始能力与等级成长倍率过大，按实例生成等级计算会导致属性溢出。')
+            for key, value in changes.items():
+                if key.startswith('pet_skill_id') and value is not None and value > 0:
+                    skills = self.connection.query(
+                        "SELECT skill_id FROM skill_definitions WHERE skill_id=%s AND enabled=1 "
+                        "AND legacy_id IS NOT NULL AND legacy_id>=0 AND ((adapter='pet' AND legacy_id<1073741824) "
+                        "OR (adapter='magic' AND skill_id<1073741824 AND legacy_id<=65535 "
+                        "AND field_type<>2 "
+                        "AND ((function_name='MAGIC_AttMagic' AND dead_target=0 AND target_type IN (1,4,8,9,10,11)) "
+                "OR (function_name<>'MAGIC_AttMagic' AND target_type IN (0,1,2,3,4,8,9) "
+                "AND NOT (function_name='MAGIC_Recovery' AND target_type=4))) "
+                "AND function_name IN ('MAGIC_AttMagic','MAGIC_Recovery','MAGIC_OtherRecovery',"
+                        "'MAGIC_StatusRecovery','MAGIC_Ressurect'))) LIMIT 1 FOR UPDATE",
+                        (value,))
+                    if not skills:
+                        raise ValueError(f'{key} 必须选择已启用且可由宠物使用的技能统一编号。')
             if changes:
                 assignments = ','.join(f'`{key}`=%s' for key in changes)
                 self.connection.write(f'UPDATE pet_base_templates SET {assignments} WHERE tempno=%s',
                                       (*changes.values(), original['tempno']))
             result = {**rows[0], **changes}
         return result
+
+    def enemy_template_form(self, identity):
+        with self.connection.snapshot():
+            rows = self.connection.query('SELECT * FROM enemy_templates WHERE id=%s LIMIT 1', (identity,))
+        if not rows:
+            raise QueryFailure('实例已不存在，请刷新列表。')
+        return {'sections': [('实例字段', rows, False)], 'links': []}
+
+    def save_enemy_template(self, original, values):
+        changes = {}
+        for key, text in values.items():
+            if key not in ('name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum') or key not in original:
+                raise ValueError('包含不可修改的实例字段。')
+            if text == display(original[key]):
+                continue
+            if key == 'name':
+                if chr(0) in text:
+                    raise ValueError('名称不能包含空字符。')
+                try:
+                    encoded = text.encode('gbk')
+                except UnicodeEncodeError:
+                    raise ValueError('名称包含服务端 GBK 不支持的字符。') from None
+                if len(encoded) >= 64:
+                    raise ValueError('名称按 GBK 编码后必须少于64字节。')
+                value = encoded if isinstance(original[key], bytes) else text
+            else:
+                if not re.fullmatch(r'[0-9]+', text):
+                    raise ValueError(f'{key} 必须为非负整数。')
+                value = int(text)
+                if value > 2147483647:
+                    raise ValueError(f'{key} 不能超过2147483647。')
+            changes[key] = value
+        with self.connection.transaction():
+            bases = self.connection.query(
+                'SELECT initnum,lvuppoint FROM pet_base_templates WHERE tempno=%s LIMIT 1 FOR UPDATE',
+                (original['tempno'],))
+            rows = self.connection.query('SELECT * FROM enemy_templates WHERE id=%s LIMIT 1 FOR UPDATE',
+                                         (original['id'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('实例已被其他操作修改，请关闭表单并重新打开。')
+            updated = {**rows[0], **changes}
+            if {'lv_min', 'lv_max'} & changes.keys():
+                low, high = int(updated['lv_min']), int(updated['lv_max'])
+                if not 0 <= low <= high or high < 1:
+                    raise ValueError('最高等级必须至少为1，最低等级不能大于最高等级。')
+                if not bases:
+                    raise ValueError('关联基板不存在，无法校验生成等级。')
+                initial, growth = int(bases[0]['initnum']), int(bases[0]['lvuppoint'])
+                if initial < 0 or growth < 0 or (high - 1) * growth + initial > 2147483647 // 265:
+                    raise ValueError('等级过高，结合基板成长倍率会导致属性溢出。')
+            if {'createminnum', 'createmaxnum'} & changes.keys():
+                if not 0 <= int(updated['createminnum']) <= int(updated['createmaxnum']):
+                    raise ValueError('最小生成数量不能大于最大生成数量，且不能为负数。')
+            if changes:
+                assignments = ','.join(f'`{key}`=%s' for key in changes)
+                self.connection.write(f'UPDATE enemy_templates SET {assignments} WHERE id=%s',
+                                      (*changes.values(), original['id']))
+        return updated
 
     def detail(self, kind, identity):
         if self.cache is not None and kind in CACHED_KINDS:
@@ -571,8 +673,10 @@ class Repository:
                         links.append(('查看物品模板', 'item_templates', ('id', int(template))))
                 else:
                     skills = self.connection.query(
-                        "SELECT a.field_key,a.numeric_value AS legacy_id,s.skill_id,s.name,s.enabled "
-                        "FROM pet_attributes a LEFT JOIN skill_definitions s ON s.adapter='pet' AND s.legacy_id=a.numeric_value "
+                        "SELECT a.field_key,a.numeric_value AS stored_id,s.skill_id,s.name,s.adapter,s.enabled "
+                        "FROM pet_attributes a LEFT JOIN skill_definitions s ON "
+                        "(a.numeric_value<1073741824 AND s.adapter='pet' AND s.legacy_id=a.numeric_value) OR "
+                        "(a.numeric_value>1073741824 AND s.adapter='magic' AND s.skill_id=a.numeric_value-1073741824) "
                         "WHERE a.instance_id=%s AND CAST(a.field_key AS CHAR CHARACTER SET ascii) REGEXP '^psk[0-6]$' ORDER BY a.field_key LIMIT 10", (identity,))
                     sections.append(('宠技编号映射（最多10条）', skills, False))
                     growth_rows = self.connection.query(

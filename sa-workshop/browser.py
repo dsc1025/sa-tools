@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from catalog import CATALOGS, cell, display
+from connection import ConnectionFailure, QueryFailure
 from cache import CACHED_KINDS
 from account_editor import AccountEditor
 from player_editor import PlayerEditor
@@ -147,10 +148,150 @@ class Browser(ttk.Frame):
             self.app.request(self, lambda: self.app.repository.pet_template_form(identity),
                              lambda result: TemplateEditor(self, result))
             return
+        if kind == 'enemy_templates':
+            self.app.request(self, lambda: self.app.repository.enemy_template_form(identity),
+                             lambda result: self.show_instance_form(result, identity))
+            return
         self.app.request(self, lambda: self.app.repository.detail(kind, identity),
                          lambda result: self.show_detail(result, identity))
 
+    def show_instance_form(self, result, identity):
+        original = result['sections'][0][1][0]
+        editable = ('name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum')
+        fields = {}
+        saving = False
+        window = tk.Toplevel(self)
+        window.generation = 0
+        window.loaded = True
+        window.info = tk.StringVar(value='')
+        window.title(f'宠物实例 #{identity}')
+        window.transient(self.app)
+        self.app.center_window(window, 660, 560)
+        content = ttk.Frame(window)
+        content.pack(fill='both', expand=True)
+        canvas = tk.Canvas(content, highlightthickness=0)
+        canvas.pack(side='left', fill='both', expand=True)
+        scroll = ttk.Scrollbar(content, orient='vertical', command=canvas.yview)
+        scroll.pack(side='right', fill='y')
+        canvas.configure(yscrollcommand=scroll.set)
+        form = ttk.Frame(canvas, padding=12)
+        form_id = canvas.create_window((0, 0), window=form, anchor='nw')
+        form.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(form_id, width=event.width))
+        form.columnconfigure(2, weight=1)
+        wheel_delta = 0
+
+        def wheel(event):
+            nonlocal wheel_delta
+            if canvas.bbox('all') and canvas.bbox('all')[3] > canvas.winfo_height():
+                wheel_delta += event.delta
+                steps = int(wheel_delta / 120)
+                wheel_delta -= steps * 120
+                canvas.yview_scroll(-steps * 3, 'units')
+            return 'break'
+
+        window.bind('<MouseWheel>', wheel)
+        meanings = {
+            'source_order': '记录加载顺序。',
+            'name': '实例名称，留空使用基板名称。',
+            'tacticsoption': '战术选项配置，按原始格式显示。',
+            'act_condition': '行动条件配置，按原始格式显示。',
+            'id': '实例编号。',
+            'tempno': '关联的宠物基板编号。',
+            'lv_min': '最低等级，0表示使用最高等级。',
+            'lv_max': '最高等级。',
+            'createmaxnum': '最大生成数量。',
+            'createminnum': '最小生成数量。',
+            'tactics': '战术配置值。',
+            'exp': '经验配置值；特殊值含义以服务端为准。',
+            'duelpoint': '决斗积分配置值；特殊值含义以服务端为准。',
+            'style': '样式配置值，具体含义以服务端为准。',
+            'petflg': '实例宠物标记。',
+        }
+        meanings.update({f'item{index}': f'第 {index} 个道具编号。'
+                         for index in range(1, 11)})
+        meanings.update({f'itemprob{index}': f'第 {index} 个道具的概率配置原始值。'
+                         for index in range(1, 11)})
+        row_index = 0
+        for title, rows, attributes in result['sections']:
+            ttk.Label(form, text=title).grid(row=row_index, column=0, columnspan=3,
+                                            sticky='w', pady=(0, 8))
+            row_index += 1
+            if not rows:
+                ttk.Label(form, text='无记录').grid(row=row_index, column=0, sticky='w')
+                row_index += 1
+            for row in rows:
+                for key, value in row.items():
+                    ttk.Label(form, text=key).grid(row=row_index, column=0, sticky='w',
+                                                   padx=(0, 12), pady=5)
+                    entry = ttk.Entry(form, width=14)
+                    entry.insert(0, display(value))
+                    entry.configure(state='normal' if key in editable else 'disabled')
+                    fields[key] = entry
+                    entry.grid(row=row_index, column=1, sticky='w', padx=(0, 12), pady=5)
+                    ttk.Label(form, text=meanings.get(key, '原始字段，当前仅支持查看。'),
+                              wraplength=340).grid(row=row_index, column=2, sticky='w', pady=5)
+                    row_index += 1
+        actions = ttk.Frame(window, padding=12)
+        actions.pack(fill='x')
+
+        def close():
+            if not saving:
+                window.generation += 1
+                window.destroy()
+
+        def finish():
+            nonlocal saving
+            saving = False
+            for key, entry in fields.items():
+                entry.configure(state='normal' if key in editable else 'disabled')
+            save_button.configure(state='normal')
+            close_button.configure(state='normal')
+
+        def saved(data):
+            nonlocal original
+            original = data
+            for key in editable:
+                entry = fields[key]
+                entry.configure(state='normal')
+                entry.delete(0, 'end')
+                entry.insert(0, display(data[key]))
+            finish()
+            window.info.set('已保存。服务端加载后的生效时间取决于其模板重载机制。')
+            self.app.after_idle(lambda: self.load(refresh=True))
+
+        def failed(error):
+            if not window.winfo_exists():
+                return
+            finish()
+            window.info.set(str(error) if isinstance(error, (ConnectionFailure, QueryFailure, ValueError))
+                            else '保存失败，请关闭表单并重新读取确认状态。')
+
+        def save():
+            nonlocal saving
+            if saving or self.app.busy or not self.app.connected:
+                return
+            values = {key: fields[key].get() for key in editable}
+            saving = True
+            for entry in fields.values():
+                entry.configure(state='disabled')
+            save_button.configure(state='disabled')
+            close_button.configure(state='disabled')
+            window.info.set('正在保存…')
+            self.app.request(window, lambda: self.app.repository.save_enemy_template(original, values),
+                             saved, on_error=failed)
+
+        ttk.Label(actions, textvariable=window.info, wraplength=450).pack(side='left')
+        close_button = ttk.Button(actions, text='关闭', command=close)
+        close_button.pack(side='right')
+        save_button = ttk.Button(actions, text='保存', command=save)
+        save_button.pack(side='right', padx=8)
+        window.protocol('WM_DELETE_WINDOW', close)
+
     def show_detail(self, result, identity):
+        if self.kind == 'enemy_templates':
+            self.show_instance_form(result, identity)
+            return
         lines = []
         for title, rows, attributes in result['sections']:
             lines.append(f'【{title}】')
