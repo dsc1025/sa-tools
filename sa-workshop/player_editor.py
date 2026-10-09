@@ -49,6 +49,7 @@ class PlayerEditor(AccountEditor):
         self.close_button.pack(side='left', padx=6)
         self.render(data)
         self.protocol('WM_DELETE_WINDOW', self.close)
+        self.app.center_window(self)
         self.grab_set()
 
     def render(self, data):

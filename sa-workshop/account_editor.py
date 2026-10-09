@@ -42,6 +42,7 @@ class AccountEditor(tk.Toplevel):
         self.close_button = ttk.Button(actions, text='关闭', command=self.close)
         self.close_button.pack(side='left', padx=(8, 0))
         self.protocol('WM_DELETE_WINDOW', self.close)
+        self.app.center_window(self)
         self.grab_set()
 
     def configure_levels(self):

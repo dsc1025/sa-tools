@@ -15,8 +15,8 @@ class Workshop(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('石器工坊 · SA 综合数据管理工具')
-        self.geometry('1020x800')
-        self.minsize(900, 780)
+        self.center_window(self, 1024, 768)
+        self.minsize(900, 768)
         self.settings = Settings()
         self.connection = Connection()
         self.repository = Repository(self.connection)
@@ -64,6 +64,20 @@ class Workshop(tk.Tk):
             variable.trace_add('write', self.schedule_config_save)
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.after(100, self.poll)
+
+    def center_window(self, window, width=None, height=None):
+        if width is None or height is None:
+            window.update_idletasks()
+            width = window.winfo_reqwidth() if width is None else width
+            height = window.winfo_reqheight() if height is None else height
+        if window is self:
+            x = (self.winfo_screenwidth() - width) // 2
+            y = (self.winfo_screenheight() - height) // 2
+        else:
+            self.update_idletasks()
+            x = self.winfo_rootx() + (self.winfo_width() - width) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - height) // 2
+        window.geometry(f'{width}x{height}+{max(0, x)}+{max(0, y)}')
 
     def build_ui(self):
         outer = ttk.Frame(self, padding=16)

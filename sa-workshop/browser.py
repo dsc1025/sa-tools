@@ -160,7 +160,7 @@ class Browser(ttk.Frame):
             lines.append('')
         window = tk.Toplevel(self)
         window.title(f'{result["sections"][0][0]} #{identity} · 详细资料')
-        window.geometry('660x560')
+        self.app.center_window(window, 660, 560)
         text = tk.Text(window, wrap='word', padx=12, pady=12)
         text.pack(side='left', fill='both', expand=True)
         scroll = ttk.Scrollbar(window, command=text.yview)
