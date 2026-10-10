@@ -41,6 +41,46 @@ PET_TEMPLATE_FIELDS.update({
 })
 
 
+ENEMY_GROUP_FIELDS = {
+    'name': ('组合名称。', None, None),
+    'appearbyitemid': ('携带此道具时出现。', -1, 2147483647),
+    'notappearbyitemid': ('携带此道具时不出现。', -1, 2147483647),
+}
+ENEMY_GROUP_FIELDS.update({
+    f'enemy_id{index}': (f'第 {index} 个实例编号。', -1, 2147483647)
+    for index in range(1, 11)
+})
+ENEMY_GROUP_FIELDS.update({
+    f'createprob{index}': (f'第 {index} 个实例的生成权重。', -1, 2147483647)
+    for index in range(1, 11)
+})
+
+
+ENCOUNTER_AREA_FIELDS = {
+    'id': ('区域编号。', -2147483648, 2147483647),
+    'floor': ('地图编号。', -2147483648, 2147483647),
+    'x1': ('起点 X。', -2147483648, 2147483647),
+    'y1': ('起点 Y。', -2147483648, 2147483647),
+    'x2': ('终点 X。', -2147483648, 2147483647),
+    'y2': ('终点 Y。', -2147483648, 2147483647),
+    'encountprob_min': ('遇敌概率下限。', -2147483648, 2147483647),
+    'encountprob_max': ('遇敌概率上限。', -2147483648, 2147483647),
+    'enemymaxnum': ('实例数上限。', 1, 10),
+    'zorder': ('区域重叠优先级。', -2147483648, 2147483647),
+    'event_now': ('进行中的事件编号。', -2147483648, 2147483647),
+    'event_end': ('已完成的事件编号。', -2147483648, 2147483647),
+    'enemy_group': ('事件替换组合编号。', -1, 2147483647),
+}
+ENCOUNTER_AREA_FIELDS.update({
+    f'groupid{index}': (f'第 {index} 个实例组合编号。', -1, 2147483647)
+    for index in range(1, 11)
+})
+ENCOUNTER_AREA_FIELDS.update({
+    f'createprob{index}': (f'第 {index} 个实例组合的生成权重。', -1, 2147483647)
+    for index in range(1, 11)
+})
+
+
 PAGE_SIZE = 50
 CHARACTER_STATS = (b'vi', b'str', b'tou', b'dx')
 CHARACTER_FIELDS = (
@@ -219,16 +259,21 @@ CATALOGS = {
          ('lv_min', '最低等级'), ('lv_max', '最高等级'), ('exp', '经验')),
         ('e.name', 'p.name', 'CAST(e.tempno AS CHAR)'), filters=(('id', 'e.id'),)),
     'enemy_groups': Catalog(
-        'enemy_groups g', 'g.id,g.name,g.enemy_id1,g.enemy_id2,g.enemy_id3,g.appearbyitemid,g.notappearbyitemid',
-        'g.id', (('id', '组合编号'), ('name', '名称'), ('enemy_id1', '实例 1'),
-                 ('enemy_id2', '实例 2'), ('enemy_id3', '实例 3'),
+        'enemy_groups g', 'g.id,g.name,('
+        + '+'.join(f'(g.enemy_id{index}<>-1)' for index in range(1, 11))
+        + ') AS instance_count,g.appearbyitemid,g.notappearbyitemid',
+        'g.id', (('id', '组合编号'), ('name', '名称'), ('instance_count', '实例数'),
                  ('appearbyitemid', '出现道具'), ('notappearbyitemid', '排除道具')),
         ('g.name',) + tuple(f'CAST(g.enemy_id{index} AS CHAR)' for index in range(1, 11)),
         filters=(('id', 'g.id'),)),
     'encounter_areas': Catalog(
-        'encounter_areas e', 'e.source_order AS id,e.id AS area_id,e.floor,e.x1,e.y1,e.x2,e.y2,e.enemymaxnum',
-        'e.source_order', (('id', '记录序号'), ('area_id', '区域编号'), ('floor', '地图'),
-                          ('x1', '起点 X'), ('y1', '起点 Y'), ('x2', '终点 X'), ('y2', '终点 Y'),
+        'encounter_areas e', 'e.source_order AS id,e.id AS area_id,e.floor,'
+        '(SELECT m.map_name FROM map_index m WHERE m.map_id=e.floor ORDER BY m.id LIMIT 1) AS map_name,('
+        + '+'.join(f'(e.groupid{index}<>-1)' for index in range(1, 11))
+        + ') AS group_count,e.enemymaxnum',
+        'e.source_order', (('id', '记录序号'), ('area_id', '区域编号'), ('floor', '地图编号'),
+                          ('map_name', '地图名称'),
+                          ('group_count', '实例组合数'),
                           ('enemymaxnum', '实例数上限')),
         ('CAST(e.id AS CHAR)', 'CAST(e.floor AS CHAR)'), filters=(('id', 'e.source_order'),)),
     'pet_capture_requirements': Catalog(
@@ -608,6 +653,129 @@ class Repository:
                 self.connection.write(f'UPDATE enemy_templates SET {assignments} WHERE id=%s',
                                       (*changes.values(), original['id']))
         return updated
+
+    def enemy_group_form(self, identity):
+        with self.connection.snapshot():
+            rows = self.connection.query('SELECT * FROM enemy_groups WHERE id=%s LIMIT 1', (identity,))
+        if not rows:
+            raise QueryFailure('实例组合已不存在，请刷新列表。')
+        return {'sections': [('实例组合字段', rows, False)], 'links': []}
+
+    def save_enemy_group(self, original, values):
+        changes = {}
+        for key, text in values.items():
+            if key not in ENEMY_GROUP_FIELDS or key not in original:
+                raise ValueError('包含不可修改的实例组合字段。')
+            if text == display(original[key]):
+                continue
+            if key == 'name':
+                if chr(0) in text:
+                    raise ValueError('名称不能包含空字符。')
+                try:
+                    encoded = text.encode('gbk')
+                except UnicodeEncodeError:
+                    raise ValueError('名称包含服务端 GBK 不支持的字符。') from None
+                if len(encoded) >= 32:
+                    raise ValueError('名称按 GBK 编码后必须少于32字节。')
+                value = encoded if isinstance(original[key], bytes) else text
+            else:
+                if not re.fullmatch(r'-?[0-9]+', text):
+                    raise ValueError(f'{key} 必须为整数。')
+                value = int(text)
+                meaning, minimum, maximum = ENEMY_GROUP_FIELDS[key]
+                if not minimum <= value <= maximum:
+                    raise ValueError(f'{key} 必须在 {minimum} 到 {maximum} 之间。')
+            changes[key] = value
+        with self.connection.transaction():
+            rows = self.connection.query('SELECT * FROM enemy_groups WHERE id=%s LIMIT 1 FOR UPDATE',
+                                         (original['id'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('实例组合已被其他操作修改，请关闭表单并重新打开。')
+            updated = {**rows[0], **changes}
+            if any(key.startswith(('enemy_id', 'createprob')) for key in changes):
+                members = [int(updated[f'enemy_id{index}']) for index in range(1, 11)
+                           if int(updated[f'enemy_id{index}']) != -1]
+                if not members or len(members) != len(set(members)):
+                    raise ValueError('组合至少需要一个实例，且实例编号不能重复。')
+                weights = [int(updated[f'createprob{index}']) for index in range(1, 11)
+                           if int(updated[f'enemy_id{index}']) != -1]
+                if any(weight < 0 for weight in weights) or not 1 <= sum(weights) <= 2147483647:
+                    raise ValueError('有效实例的权重不能为负数，权重总和必须在1到2147483647之间。')
+                placeholders = ','.join('%s' for member in members)
+                found = self.connection.query(
+                    f'SELECT id FROM enemy_templates WHERE id IN ({placeholders}) FOR UPDATE', tuple(members))
+                if {row['id'] for row in found} != set(members):
+                    raise ValueError('组合包含不存在的实例编号。')
+            if changes:
+                assignments = ','.join(f'`{key}`=%s' for key in changes)
+                self.connection.write(f'UPDATE enemy_groups SET {assignments} WHERE id=%s',
+                                      (*changes.values(), original['id']))
+        return updated
+
+    def encounter_area_form(self, identity):
+        with self.connection.snapshot():
+            rows = self.connection.query(
+                'SELECT * FROM encounter_areas WHERE source_order=%s LIMIT 1', (identity,))
+            map_name = self.map_name(rows[0]['floor']) if rows else None
+        if not rows:
+            raise QueryFailure('遇敌区域已不存在，请刷新列表。')
+        return {'sections': [('遇敌区域字段', rows, False)], 'links': [], 'map_name': map_name}
+
+    def map_name(self, identity):
+        rows = self.connection.query(
+            'SELECT map_name FROM map_index WHERE map_id=%s ORDER BY id LIMIT 1', (identity,))
+        return rows[0]['map_name'] if rows else None
+
+    def save_encounter_area(self, original, values):
+        changes = {}
+        for key, text in values.items():
+            if key not in ENCOUNTER_AREA_FIELDS or key not in original:
+                raise ValueError('包含不可修改的遇敌区域字段。')
+            if text == display(original[key]):
+                continue
+            if not re.fullmatch(r'-?[0-9]+', text):
+                raise ValueError(f'{key} 必须为整数。')
+            value = int(text)
+            meaning, minimum, maximum = ENCOUNTER_AREA_FIELDS[key]
+            if not minimum <= value <= maximum:
+                raise ValueError(f'{key} 必须在 {minimum} 到 {maximum} 之间。')
+            changes[key] = value
+        with self.connection.transaction():
+            rows = self.connection.query(
+                'SELECT * FROM encounter_areas WHERE source_order=%s LIMIT 1 FOR UPDATE',
+                (original['source_order'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('遇敌区域已被其他操作修改，请关闭表单并重新打开。')
+            updated = {**rows[0], **changes}
+            if {'x1', 'x2', 'y1', 'y2'} & changes.keys():
+                if any(abs(int(updated[f'{axis}2']) - int(updated[f'{axis}1'])) > 2147483647
+                       for axis in ('x', 'y')):
+                    raise ValueError('区域坐标跨度不能超过2147483647。')
+            if any(key.startswith(('groupid', 'createprob')) for key in changes):
+                groups = [int(updated[f'groupid{index}']) for index in range(1, 11)
+                          if int(updated[f'groupid{index}']) != -1]
+                if len(groups) != len(set(groups)):
+                    raise ValueError('实例组合编号不能重复。')
+                weights = [int(updated[f'createprob{index}']) for index in range(1, 11)
+                           if int(updated[f'groupid{index}']) != -1]
+                if groups and (any(weight < 0 for weight in weights)
+                               or not 1 <= sum(weights) <= 2147483647):
+                    raise ValueError('有效组合的权重不能为负数，权重总和必须在1到2147483647之间。')
+            references = {int(updated[key]) for key in changes
+                          if key.startswith('groupid') or key == 'enemy_group'} - {-1}
+            if references:
+                placeholders = ','.join('%s' for identity in references)
+                found = self.connection.query(
+                    f'SELECT id FROM enemy_groups WHERE id IN ({placeholders}) FOR UPDATE',
+                    tuple(references))
+                if {row['id'] for row in found} != references:
+                    raise ValueError('包含不存在的实例组合编号。')
+            if changes:
+                assignments = ','.join(f'`{key}`=%s' for key in changes)
+                self.connection.write(f'UPDATE encounter_areas SET {assignments} WHERE source_order=%s',
+                                      (*changes.values(), original['source_order']))
+            map_name = self.map_name(updated['floor'])
+        return {'area': updated, 'map_name': map_name}
 
     def detail(self, kind, identity):
         if self.cache is not None and kind in CACHED_KINDS:

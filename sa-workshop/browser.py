@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from catalog import CATALOGS, cell, display
+from catalog import CATALOGS, ENEMY_GROUP_FIELDS, ENCOUNTER_AREA_FIELDS, cell, display
 from connection import ConnectionFailure, QueryFailure
 from cache import CACHED_KINDS
 from account_editor import AccountEditor
@@ -152,19 +152,33 @@ class Browser(ttk.Frame):
             self.app.request(self, lambda: self.app.repository.enemy_template_form(identity),
                              lambda result: self.show_instance_form(result, identity))
             return
+        if kind == 'enemy_groups':
+            self.app.request(self, lambda: self.app.repository.enemy_group_form(identity),
+                             lambda result: self.show_instance_form(result, identity, group=True))
+            return
+        if kind == 'encounter_areas':
+            self.app.request(self, lambda: self.app.repository.encounter_area_form(identity),
+                             lambda result: self.show_instance_form(result, identity, area=True))
+            return
         self.app.request(self, lambda: self.app.repository.detail(kind, identity),
                          lambda result: self.show_detail(result, identity))
 
-    def show_instance_form(self, result, identity):
+    def show_instance_form(self, result, identity, group=False, area=False):
         original = result['sections'][0][1][0]
-        editable = ('name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum')
+        editable = (tuple(key for key in ENEMY_GROUP_FIELDS if key in original) if group else
+                    ('name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum'))
+        save_record = (self.app.repository.save_enemy_group if group else
+                       self.app.repository.save_enemy_template)
+        if area:
+            editable = tuple(key for key in ENCOUNTER_AREA_FIELDS if key in original)
+            save_record = self.app.repository.save_encounter_area
         fields = {}
         saving = False
         window = tk.Toplevel(self)
         window.generation = 0
         window.loaded = True
         window.info = tk.StringVar(value='')
-        window.title(f'宠物实例 #{identity}')
+        window.title(f'遇敌区域 #{identity}' if area else f'宠物实例{"组合" if group else ""} #{identity}')
         window.transient(self.app)
         self.app.center_window(window, 660, 560)
         content = ttk.Frame(window)
@@ -212,6 +226,13 @@ class Browser(ttk.Frame):
                          for index in range(1, 11)})
         meanings.update({f'itemprob{index}': f'第 {index} 个道具的概率配置原始值。'
                          for index in range(1, 11)})
+        if group:
+            meanings = {'source_order': '记录加载顺序。', 'id': '组合编号。',
+                        **{key: definition[0] for key, definition in ENEMY_GROUP_FIELDS.items()}}
+        if area:
+            meanings = {'source_order': '记录加载顺序。',
+                        'map_name': '地图名称。',
+                        **{key: definition[0] for key, definition in ENCOUNTER_AREA_FIELDS.items()}}
         row_index = 0
         for title, rows, attributes in result['sections']:
             ttk.Label(form, text=title).grid(row=row_index, column=0, columnspan=3,
@@ -221,6 +242,13 @@ class Browser(ttk.Frame):
                 ttk.Label(form, text='无记录').grid(row=row_index, column=0, sticky='w')
                 row_index += 1
             for row in rows:
+                if area:
+                    area_row = {}
+                    for key, value in row.items():
+                        area_row[key] = value
+                        if key == 'floor':
+                            area_row['map_name'] = result.get('map_name')
+                    row = area_row
                 for key, value in row.items():
                     ttk.Label(form, text=key).grid(row=row_index, column=0, sticky='w',
                                                    padx=(0, 12), pady=5)
@@ -250,6 +278,12 @@ class Browser(ttk.Frame):
 
         def saved(data):
             nonlocal original
+            if area:
+                entry = fields['map_name']
+                entry.configure(state='normal')
+                entry.delete(0, 'end')
+                entry.insert(0, display(data['map_name']))
+                data = data['area']
             original = data
             for key in editable:
                 entry = fields[key]
@@ -278,7 +312,7 @@ class Browser(ttk.Frame):
             save_button.configure(state='disabled')
             close_button.configure(state='disabled')
             window.info.set('正在保存…')
-            self.app.request(window, lambda: self.app.repository.save_enemy_template(original, values),
+            self.app.request(window, lambda: save_record(original, values),
                              saved, on_error=failed)
 
         ttk.Label(actions, textvariable=window.info, wraplength=450).pack(side='left')
@@ -289,8 +323,9 @@ class Browser(ttk.Frame):
         window.protocol('WM_DELETE_WINDOW', close)
 
     def show_detail(self, result, identity):
-        if self.kind == 'enemy_templates':
-            self.show_instance_form(result, identity)
+        if self.kind in ('enemy_templates', 'enemy_groups', 'encounter_areas'):
+            self.show_instance_form(result, identity, group=self.kind == 'enemy_groups',
+                                    area=self.kind == 'encounter_areas')
             return
         lines = []
         for title, rows, attributes in result['sections']:
