@@ -6,3 +6,5 @@ diagnostic_deps
 CG_SPRS
 *.json
 cache
+spr
+data
