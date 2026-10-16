@@ -513,6 +513,10 @@ class Repository:
                                              (*parameters, PAGE_SIZE, page * PAGE_SIZE))
         return {'rows': rows, 'total': total, 'page': page}
 
+    def template_enemies(self, identity):
+        return self.connection.query(
+            'SELECT id,name,lv_min,lv_max FROM enemy_templates WHERE tempno=%s ORDER BY id', (identity,))
+
     def pet_template_form(self, identity):
         with self.connection.snapshot():
             rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1', (identity,))
