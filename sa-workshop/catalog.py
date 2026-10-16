@@ -517,6 +517,19 @@ class Repository:
         return self.connection.query(
             'SELECT id,name,lv_min,lv_max FROM enemy_templates WHERE tempno=%s ORDER BY id', (identity,))
 
+    def enemy_groups(self, identity):
+        conditions = ' OR '.join(f'enemy_id{index}=%s' for index in range(1, 11))
+        return self.connection.query(
+            f'SELECT id,name FROM enemy_groups WHERE {conditions} ORDER BY id', (identity,) * 10)
+
+    def group_areas(self, identity):
+        conditions = ' OR '.join(f'e.groupid{index}=%s' for index in range(1, 11))
+        return self.connection.query(
+            'SELECT e.source_order AS id,e.id AS area_id,e.floor,'
+            '(SELECT m.map_name FROM map_index m WHERE m.map_id=e.floor ORDER BY m.id LIMIT 1) AS map_name '
+            f'FROM encounter_areas e WHERE {conditions} OR e.enemy_group=%s ORDER BY e.source_order',
+            (identity,) * 11)
+
     def pet_template_form(self, identity):
         with self.connection.snapshot():
             rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1', (identity,))

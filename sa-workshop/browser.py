@@ -63,6 +63,10 @@ class Browser(ttk.Frame):
         self.tree.bind('<<TreeviewSelect>>', self.selected_row)
         if self.kind == 'pet_templates':
             self.tree.bind('<Button-3>', self.template_menu)
+        elif self.kind == 'enemy_templates':
+            self.tree.bind('<Button-3>', self.enemy_menu)
+        elif self.kind == 'enemy_groups':
+            self.tree.bind('<Button-3>', self.group_menu)
         ttk.Label(self.content, textvariable=self.info).pack(anchor='w', pady=(6, 0))
         self.configure_columns()
         self.set_enabled(False)
@@ -79,24 +83,57 @@ class Browser(ttk.Frame):
         self.app.request(self, lambda: self.app.repository.template_enemies(template),
                          lambda rows: self.show_template_menu(rows, event.x_root, event.y_root))
 
-    def show_template_menu(self, rows, x, y):
+    def enemy_menu(self, event):
+        if not self.app.connected or self.app.busy:
+            return
+        identity = self.tree.identify_row(event.y)
+        if not identity or identity not in self.rows:
+            return
+        self.tree.selection_set(identity)
+        self.tree.focus(identity)
+        enemy = self.rows[identity]['id']
+        self.app.request(self, lambda: self.app.repository.enemy_groups(enemy),
+                         lambda rows: self.show_template_menu(rows, event.x_root, event.y_root,
+                                                              kind='enemy_groups'))
+
+    def group_menu(self, event):
+        if not self.app.connected or self.app.busy:
+            return
+        identity = self.tree.identify_row(event.y)
+        if not identity or identity not in self.rows:
+            return
+        self.tree.selection_set(identity)
+        self.tree.focus(identity)
+        group = self.rows[identity]['id']
+        self.app.request(self, lambda: self.app.repository.group_areas(group),
+                         lambda rows: self.show_template_menu(rows, event.x_root, event.y_root,
+                                                              kind='encounter_areas'))
+
+    def show_template_menu(self, rows, x, y, kind='enemy_templates'):
         if hasattr(self, 'pet_menu'):
             self.pet_menu.destroy()
         menu = self.pet_menu = tk.Menu(self, tearoff=False)
         for row in rows:
-            menu.add_command(label=f'{row["id"]} · {display(row["name"])} · lv{row["lv_min"]}~{row["lv_max"]}',
-                             command=lambda identity=row['id']: self.locate_enemy(identity))
+            if kind == 'encounter_areas':
+                label = f'{row["area_id"]} · {display(row["map_name"])}[{row["floor"]}]'
+            else:
+                label = f'{row["id"]} · {display(row["name"])}'
+                if kind == 'enemy_templates':
+                    label += f' · lv{row["lv_min"]}~{row["lv_max"]}'
+            menu.add_command(label=label,
+                             command=lambda identity=row['id']: self.locate_enemy(identity, kind))
         if not rows:
-            menu.add_command(label='无对应实例', state='disabled')
+            title = {'enemy_templates': '实例', 'enemy_groups': '组合', 'encounter_areas': '区域'}[kind]
+            menu.add_command(label=f'无对应{title}', state='disabled')
         try:
             menu.tk_popup(x, y)
         finally:
             menu.grab_release()
 
-    def locate_enemy(self, identity):
+    def locate_enemy(self, identity, kind='enemy_templates'):
         if not self.app.connected or self.app.busy:
             return
-        page = next(page for page in self.app.pet_pages if page.kind == 'enemy_templates')
+        page = next(page for page in self.app.pet_pages if page.kind == kind)
         page.keyword.set('')
         page.scope = None
 
@@ -110,9 +147,10 @@ class Browser(ttk.Frame):
                 page.tree.see(key)
                 page.tree.focus_set()
             else:
-                page.info.set(f'实例 #{identity} 已不存在，请刷新基板实例菜单。')
+                title = {'enemy_templates': '实例', 'enemy_groups': '组合', 'encounter_areas': '区域'}[kind]
+                page.info.set(f'{title} #{identity} 已不存在，请重新打开右键菜单。')
 
-        self.app.request(page, lambda: self.app.repository.page('enemy_templates', '', page=None,
+        self.app.request(page, lambda: self.app.repository.page(kind, '', page=None,
                                                                refresh=True), show)
 
     def configure_columns(self):
