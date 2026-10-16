@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from catalog import CATALOGS, ENEMY_GROUP_FIELDS, ENCOUNTER_AREA_FIELDS, cell, display
 from connection import ConnectionFailure, QueryFailure
@@ -37,18 +37,27 @@ class Browser(ttk.Frame):
         if len(modes) > 1:
             self.mode_box.pack(side='left', padx=(0, 10))
         self.mode_box.bind('<<ComboboxSelected>>', self.change_mode)
+        pet_page = self.kind == 'pet_templates'
         self.search_entry = ttk.Entry(bar, textvariable=self.keyword)
-        if not scoped:
+        if pet_page:
+            self.search_entry.configure(width=24)
+            self.search_entry.pack(side='left')
+        elif not scoped:
             self.search_entry.pack(side='left', fill='x', expand=True)
         self.search_entry.bind('<Return>', lambda event: self.search())
         actions = (('刷新', self.search),) if scoped else (('搜索 / 刷新', self.search), ('清除筛选', self.clear_filter))
         if self.kind in CACHED_KINDS:
             actions = (('搜索', self.search), ('清除筛选', self.clear_filter),
-                       ('更新本地缓存', lambda: self.load(refresh=True)))
+                       ('同步数据库', lambda: self.load(refresh=True)))
+        if pet_page:
+            actions = (('搜索', self.search), ('新增', self.new_template),
+                       ('删除', self.delete_template),
+                       ('同步数据库', lambda: self.load(refresh=True)))
         for label, action in actions:
             button = ttk.Button(refresh_parent if refresh_parent is not None else bar,
                                 text='刷新角色' if refresh_parent is not None else label, command=action)
-            button.pack(side='left', padx=(6, 0))
+            button.pack(side='right' if pet_page and label == '同步数据库' else 'left',
+                        padx=(6, 0))
             self.buttons.append(button)
         listing = ttk.Frame(self.content)
         listing.pack(fill='both', expand=True)
@@ -70,6 +79,37 @@ class Browser(ttk.Frame):
         ttk.Label(self.content, textvariable=self.info).pack(anchor='w', pady=(6, 0))
         self.configure_columns()
         self.set_enabled(False)
+
+    def new_template(self):
+        if not self.app.connected or self.app.busy:
+            return
+        self.app.request(self, self.app.repository.new_pet_template_form,
+                         lambda result: TemplateEditor(self, result, creating=True))
+
+    def delete_template(self):
+        if not self.app.connected or self.app.busy:
+            return
+        selection = self.tree.selection()
+        if not selection or selection[0] not in self.rows:
+            self.info.set('请先选择要删除的基板。')
+            return
+        identity = self.rows[selection[0]]['id']
+
+        def failed(error):
+            if isinstance(error, ValueError):
+                messagebox.showwarning('不能删除基板', str(error), parent=self)
+
+        def confirm(result):
+            original = result['template']
+            if messagebox.askyesno('删除基板',
+                                   f'确定删除基板 #{identity}（{display(original["name"])}）？',
+                                   parent=self):
+                self.app.request(self, lambda: self.app.repository.delete_pet_template(original),
+                                 lambda result: self.app.after_idle(lambda: self.load(refresh=True)),
+                                 on_error=failed)
+
+        self.app.request(self, lambda: self.app.repository.pet_template_delete_form(identity),
+                         confirm, on_error=failed)
 
     def template_menu(self, event):
         if not self.app.connected or self.app.busy:

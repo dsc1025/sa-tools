@@ -530,6 +530,33 @@ class Repository:
             f'FROM encounter_areas e WHERE {conditions} OR e.enemy_group=%s ORDER BY e.source_order',
             (identity,) * 11)
 
+    def new_pet_template_form(self):
+        return self.pet_template_form(None)
+
+    def pet_template_delete_form(self, identity):
+        enemies = self.connection.query(
+            'SELECT id FROM enemy_templates WHERE tempno=%s LIMIT 1', (identity,))
+        if enemies:
+            raise ValueError(f'基板 #{identity} 有关联实例 #{enemies[0]["id"]}，不能删除。')
+        return self.pet_template_form(identity)
+
+    def delete_pet_template(self, original):
+        identity = original['tempno']
+        with self.connection.transaction():
+            rows = self.connection.query(
+                'SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1 FOR UPDATE', (identity,))
+            if not rows or rows[0] != original:
+                raise QueryFailure('基板已被其他操作修改，请刷新后重试。')
+            enemies = self.connection.query(
+                'SELECT id FROM enemy_templates WHERE tempno=%s LIMIT 1 FOR UPDATE', (identity,))
+            requirements = self.connection.query(
+                'SELECT pet_id FROM pet_capture_requirements WHERE pet_id=%s LIMIT 1 FOR UPDATE', (identity,))
+            if enemies:
+                raise ValueError(f'基板 #{identity} 有关联实例 #{enemies[0]["id"]}，不能删除。')
+            if requirements:
+                raise ValueError(f'基板 #{identity} 被捕捉条件引用，不能删除。')
+            self.connection.write('DELETE FROM pet_base_templates WHERE tempno=%s', (identity,))
+
     def pet_template_form(self, identity):
         with self.connection.snapshot():
             rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1', (identity,))
@@ -543,11 +570,28 @@ class Repository:
                 "AND NOT (function_name='MAGIC_Recovery' AND target_type=4))) "
                 "AND function_name IN ('MAGIC_AttMagic','MAGIC_Recovery','MAGIC_OtherRecovery',"
                 "'MAGIC_StatusRecovery','MAGIC_Ressurect'))) ORDER BY skill_id")
+        if identity is None:
+            template = {key: 0 for key in PET_TEMPLATE_FIELDS}
+            template.update(source_order=0, tempno='', name='', petflg=0, critical=0, counter=0)
+            for index in range(1, 8):
+                template[f'petskill{index}'] = -1
+            for index in range(1, 6):
+                template[f'atomfixname{index}'] = ''
+                for prefix in ('atombaseadd', 'atomfixmin', 'atomfixmax'):
+                    template[f'{prefix}{index}'] = 0
+            return {'template': template, 'skills': skills}
         if not rows:
             raise QueryFailure('基板已不存在，请刷新列表。')
         return {'template': rows[0], 'skills': skills}
 
-    def save_pet_template(self, original, values):
+    def save_pet_template(self, original, values, creating=False):
+        if creating:
+            text = str(original['tempno'])
+            if not re.fullmatch(r'[0-9]+', text) or int(text) > 2147483647:
+                raise ValueError('基板编号必须在0到2147483647之间。')
+            original = {**original, 'tempno': int(text)}
+            if not values.get('name'):
+                raise ValueError('名称不能为空。')
         changes = {}
         for key, text in values.items():
             if key not in PET_TEMPLATE_FIELDS or key not in original:
@@ -575,9 +619,24 @@ class Repository:
                     raise ValueError(f'{key} 必须在 {minimum} 到 {maximum} 之间。')
             changes[key] = value
         with self.connection.transaction():
+            if creating:
+                orders = self.connection.query(
+                    'SELECT source_order FROM pet_base_templates ORDER BY source_order DESC LIMIT 1 FOR UPDATE')
+                original['source_order'] = int(orders[0]['source_order']) + 1 if orders else 0
+                if original['source_order'] > 4294967295:
+                    raise ValueError('记录加载顺序已达到上限，无法新增。')
+                if self.connection.query('SELECT tempno FROM pet_base_templates WHERE tempno=%s FOR UPDATE',
+                                         (original['tempno'],)):
+                    raise ValueError('基板编号已存在，请使用其他编号。')
+                keys = tuple(original)
+                columns = ','.join(f'`{key}`' for key in keys)
+                placeholders = ','.join('%s' for key in keys)
+                self.connection.write(
+                    f'INSERT INTO pet_base_templates ({columns}) VALUES ({placeholders})',
+                    tuple(original[key] for key in keys))
             rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1 FOR UPDATE',
                                          (original['tempno'],))
-            if not rows or rows[0] != original:
+            if not rows or (not creating and rows[0] != original):
                 raise QueryFailure('基板已被其他操作修改，请关闭表单并重新打开。')
             if {'initnum', 'lvuppoint'} & changes.keys():
                 updated = {**rows[0], **changes}

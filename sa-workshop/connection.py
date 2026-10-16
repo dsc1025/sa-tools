@@ -176,7 +176,7 @@ class Connection:
             raise
 
     def write(self, sql, parameters):
-        if not sql.lstrip().upper().startswith(('UPDATE ', 'INSERT ')):
+        if not sql.lstrip().upper().startswith(('UPDATE ', 'INSERT ', 'DELETE ')):
             raise QueryFailure('不支持此保存操作。')
         if self.mysql is None:
             raise ConnectionFailure('请先连接数据库。')

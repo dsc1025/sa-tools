@@ -8,8 +8,9 @@ from connection import ConnectionFailure, QueryFailure
 
 
 class TemplateEditor(tk.Toplevel):
-    def __init__(self, page, data):
+    def __init__(self, page, data, creating=False):
         super().__init__(page)
+        self.creating = creating
         skills = data['skills']
         data = data['template']
         self.skill_labels = {str(row['skill_id']):
@@ -24,7 +25,7 @@ class TemplateEditor(tk.Toplevel):
         self.saving = False
         self.info = tk.StringVar(value='')
         self.fields = {}
-        self.title(f'宠物基板 #{data["tempno"]}')
+        self.title('新增宠物基板' if creating else f'宠物基板 #{data["tempno"]}')
         self.transient(self.app)
         self.app.center_window(self, 660, 560)
         content = ttk.Frame(self)
@@ -65,6 +66,8 @@ class TemplateEditor(tk.Toplevel):
             if key.startswith(('atomfixname', 'atombaseadd', 'atomfixmin', 'atomfixmax')):
                 continue
             definition = PET_TEMPLATE_FIELDS.get(key)
+            if creating and key == 'tempno':
+                definition = ('宠物基板编号。', 0, 2147483647)
             if key.startswith(('petskill', 'pet_skill_id')):
                 meaning = ''
             elif definition:
@@ -128,11 +131,17 @@ class TemplateEditor(tk.Toplevel):
         self.save_button.configure(state='disabled')
         self.close_button.configure(state='disabled')
         self.info.set('正在保存…')
-        self.app.request(self, lambda: self.app.repository.save_pet_template(self.original, values),
+        original = dict(self.original)
+        if self.creating:
+            original['tempno'] = self.fields['tempno'][0].get()
+        self.app.request(self, lambda: self.app.repository.save_pet_template(original, values,
+                                                                            creating=self.creating),
                          self.saved, on_error=self.failed)
 
     def saved(self, data):
+        self.creating = False
         self.original = data
+        self.title(f'宠物基板 #{data["tempno"]}')
         for key, (variable, entry) in self.fields.items():
             value = display(data[key])
             variable.set(self.skill_labels.get(value, value) if key.startswith('pet_skill_id') else value)
@@ -150,7 +159,8 @@ class TemplateEditor(tk.Toplevel):
     def finish(self):
         self.saving = False
         for key, (variable, entry) in self.fields.items():
-            entry.configure(state='normal' if key in PET_TEMPLATE_FIELDS else 'disabled')
+            entry.configure(state='normal' if key in PET_TEMPLATE_FIELDS
+                            or (self.creating and key == 'tempno') else 'disabled')
         self.save_button.configure(state='normal')
         self.close_button.configure(state='normal')
 
