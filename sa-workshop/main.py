@@ -117,8 +117,8 @@ class Workshop(tk.Tk):
         self.pet_tabs = ttk.Notebook(body)
         body.add(self.pet_tabs, text='宠物')
         for title, kind in (('基板', 'pet_templates'),
-                            ('实例', 'enemy_templates'), ('实例组合', 'enemy_groups'),
-                            ('遇敌区域', 'encounter_areas'), ('捕捉条件', 'pet_capture_requirements')):
+                            ('实例', 'enemy_templates'), ('组合', 'enemy_groups'),
+                            ('遇敌', 'encounter_areas'), ('捕捉', 'pet_capture_requirements')):
             page = Browser(self.pet_tabs, self, ((title, kind),))
             self.pet_pages.append(page)
             self.pages.append(page)
@@ -140,7 +140,7 @@ class Workshop(tk.Tk):
         body.add(panel, text='设置')
         body.select(panel)
         body.bind('<<NotebookTabChanged>>', self.tab_changed)
-        self.assets_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
+        self.assets_tabs.bind('<<NotebookTabChanged>>', self.refresh_assets)
         self.pet_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         self.ride_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         profiles = ttk.Frame(panel)
@@ -331,25 +331,25 @@ class Workshop(tk.Tk):
         if not self.connected or self.busy:
             return
         for page in (self.item_page, self.skill_page):
-            if self.notebook.select() == str(page):
+            if str(self.notebook.select()) == str(page):
                 if not page.loaded:
                     page.search()
                 return
-        if self.notebook.select() == str(self.ride_tabs):
-            selected = self.ride_tabs.select()
+        if str(self.notebook.select()) == str(self.ride_tabs):
+            selected = str(self.ride_tabs.select())
             for page in self.ride_pages:
                 if str(page) == selected and not page.loaded:
                     page.search()
                     break
             return
-        if self.notebook.select() == str(self.pet_tabs):
-            selected = self.pet_tabs.select()
+        if str(self.notebook.select()) == str(self.pet_tabs):
+            selected = str(self.pet_tabs.select())
             for page in self.pet_pages:
                 if str(page) == selected and not page.loaded:
                     page.search()
                     break
             return
-        if self.notebook.select() != str(self.players):
+        if str(self.notebook.select()) != str(self.players):
             return
         if not self.pages[0].loaded:
             self.pages[0].search()
@@ -357,11 +357,23 @@ class Workshop(tk.Tk):
         if self.selected_account is not None and not self.pages[1].loaded:
             self.pages[1].search()
             return
-        selected = self.assets_tabs.select()
-        for page in self.pages:
-            if str(page) == selected and not page.loaded and (page.kind == 'accounts' or page.scope is not None):
-                page.search()
-                break
+        self.refresh_assets()
+
+    def refresh_assets(self, event=None):
+        selected = str(self.assets_tabs.select())
+        page = next((page for page in self.pages[2:4] if str(page) == selected), None)
+        if page is None:
+            return
+        if event is not None:
+            page.clear_results()
+        if (not self.connected or self.busy or self.selected_character is None
+                or str(self.notebook.select()) != str(self.players)):
+            return
+        if page.scope != ('character_id', self.selected_character):
+            page.clear_results()
+            page.scope = ('character_id', self.selected_character)
+        if not page.loaded:
+            page.search()
 
     def selected_row(self, page, row, refresh=False):
         if page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page):

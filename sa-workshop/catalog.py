@@ -188,23 +188,24 @@ class Catalog:
 
 
 def instance_catalog(kind):
-    name_key = 'name' if kind == 'pet' else 'na'
-    name = f"(SELECT field_value FROM {kind}_attributes WHERE instance_id=p.id AND field_key='{name_key}' ORDER BY ordinal LIMIT 1)"
+    source = (f'{kind}_instances p LEFT JOIN characters c ON c.id=p.character_id '
+              f'LEFT JOIN {kind}_attributes a ON a.instance_id=p.id')
     if kind == 'pet':
-        nickname = "(SELECT field_value FROM pet_attributes WHERE instance_id=p.id AND field_key='ownt' ORDER BY ordinal LIMIT 1)"
-        name = f"COALESCE(NULLIF({nickname},''),{name})"
-    level = f"(SELECT numeric_value FROM {kind}_attributes WHERE instance_id=p.id AND field_key='lv' ORDER BY ordinal LIMIT 1)"
+        name = "COALESCE(NULLIF(a.ownt,''),a.name)"
+        level = 'a.lv'
+    else:
+        source += ' LEFT JOIN item_templates t ON t.id=a.id'
+        name = 'COALESCE(a.na,CAST(CONVERT(t.name USING gbk) AS BINARY))'
+        level = 'COALESCE(a.lv,t.level)'
     identity = 'template_instance_id' if kind == 'pet' else 'id'
     columns = ((identity, '实例编号'), ('name', '名称'))
     if kind != 'pet':
         columns += (('owner', '所属角色'),)
     columns += (('container', '位置'), ('slot', '槽位'), ('level', '等级'), ('unique_code', '唯一编号'))
     return Catalog(
-        f'{kind}_instances p LEFT JOIN characters c ON c.id=p.character_id',
+        source,
         f'p.id,p.unique_code,p.character_id,c.name AS owner,p.container,p.slot,{name} AS name,{level} AS level'
-        + (",(SELECT numeric_value FROM pet_attributes WHERE instance_id=p.id "
-           "AND field_key='source_instance_id' ORDER BY ordinal LIMIT 1) AS template_instance_id"
-           if kind == 'pet' else ''),
+        + (',a.source_instance_id AS template_instance_id' if kind == 'pet' else ''),
         'p.id', columns,
         (name, 'c.name', 'p.unique_code'), True, True,
         (('id', 'p.id'), ('character_id', 'p.character_id')))
@@ -232,12 +233,10 @@ CATALOGS = {
         (('entry_index', '记录序号'), ('value1', '庄园楼层'), ('value2', '族长许可槽位'),
          ('value3', '长老许可槽位'), ('value4', '族员许可槽位'))),
     'accounts': Catalog(
-        "accounts a LEFT JOIN account_permissions g ON g.account_id=a.id AND g.permission='gm.level' "
-        'LEFT JOIN login_sessions s ON s.account_id=a.id',
-        'a.id,a.username,a.enabled,a.created_at,COALESCE(g.level,0) AS gm_level,'
-        '(s.account_id IS NOT NULL) AS online', 'a.id',
+        "accounts a LEFT JOIN account_permissions g ON g.account_id=a.id AND g.permission='gm.level'",
+        'a.id,a.username,a.enabled,a.created_at,COALESCE(g.level,0) AS gm_level', 'a.id',
         (('id', '账户编号'), ('username', '账号'), ('enabled', '启用'), ('gm_level', 'GM等级'),
-         ('online', '有登录会话'), ('created_at', '创建时间')), ('a.username',), True,
+         ('created_at', '创建时间')), ('a.username',), True,
         filters=(('id', 'a.id'),)),
     'characters': Catalog(
         'character_summary c JOIN accounts a ON a.id=c.account_id',
@@ -679,12 +678,41 @@ class Repository:
             raise QueryFailure('实例已不存在，请刷新列表。')
         return {'sections': [('实例字段', rows, False)], 'links': []}
 
-    def save_enemy_template(self, original, values):
+    def new_enemy_template_form(self):
+        template = dict(source_order=0, name='', tacticsoption='at:1;1;1|gu:0|es:0|rn:|wa:0;0;0;0;0;0;0;',
+                        act_condition='', id='', tempno='', lv_min=1, lv_max=1,
+                        createmaxnum=1, createminnum=1, tactics=1, exp=-1,
+                        duelpoint=-1, style=0, petflg=1)
+        template.update({f'item{index}': 0 for index in range(1, 11)})
+        template.update({f'itemprob{index}': 0 for index in range(1, 11)})
+        return {'sections': [('实例字段', [template], False)], 'links': []}
+
+    def delete_enemy_template(self, original):
+        with self.connection.transaction():
+            rows = self.connection.query('SELECT * FROM enemy_templates WHERE id=%s LIMIT 1 FOR UPDATE',
+                                         (original['id'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('实例已被其他操作修改，请刷新后重试。')
+            conditions = ' OR '.join(f'enemy_id{index}=%s' for index in range(1, 11))
+            groups = self.connection.query(
+                f'SELECT id FROM enemy_groups WHERE {conditions} LIMIT 1 FOR UPDATE',
+                (original['id'],) * 10)
+            if groups:
+                raise ValueError(f'实例被组合 #{groups[0]["id"]} 引用，不能删除。')
+            remaining = self.connection.query('SELECT id FROM enemy_templates WHERE id<>%s LIMIT 1 FOR UPDATE',
+                                              (original['id'],))
+            if not remaining:
+                raise ValueError('服务端要求至少保留一个实例，不能删除最后一个实例。')
+            self.connection.write('DELETE FROM enemy_templates WHERE id=%s', (original['id'],))
+
+    def save_enemy_template(self, original, values, creating=False):
+        editable = ('tempno', 'name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum',
+                    'item1', 'item2', 'itemprob1', 'itemprob2')
         changes = {}
         for key, text in values.items():
-            if key not in ('name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum') or key not in original:
+            if key not in editable or key not in original:
                 raise ValueError('包含不可修改的实例字段。')
-            if text == display(original[key]):
+            if not creating and text == display(original[key]):
                 continue
             if key == 'name':
                 if chr(0) in text:
@@ -703,16 +731,18 @@ class Repository:
                 if value > 2147483647:
                     raise ValueError(f'{key} 不能超过2147483647。')
             changes[key] = value
+        if creating and not all(key in changes for key in editable):
+            raise ValueError('请填写完整的实例字段。')
         with self.connection.transaction():
             bases = self.connection.query(
                 'SELECT initnum,lvuppoint FROM pet_base_templates WHERE tempno=%s LIMIT 1 FOR UPDATE',
-                (original['tempno'],))
-            rows = self.connection.query('SELECT * FROM enemy_templates WHERE id=%s LIMIT 1 FOR UPDATE',
-                                         (original['id'],))
+                (changes.get('tempno', original['tempno']),))
+            rows = [original] if creating else self.connection.query(
+                'SELECT * FROM enemy_templates WHERE id=%s LIMIT 1 FOR UPDATE', (original['id'],))
             if not rows or rows[0] != original:
                 raise QueryFailure('实例已被其他操作修改，请关闭表单并重新打开。')
             updated = {**rows[0], **changes}
-            if {'lv_min', 'lv_max'} & changes.keys():
+            if creating or {'tempno', 'lv_min', 'lv_max'} & changes.keys():
                 low, high = int(updated['lv_min']), int(updated['lv_max'])
                 if not 0 <= low <= high or high < 1:
                     raise ValueError('最高等级必须至少为1，最低等级不能大于最高等级。')
@@ -721,10 +751,25 @@ class Repository:
                 initial, growth = int(bases[0]['initnum']), int(bases[0]['lvuppoint'])
                 if initial < 0 or growth < 0 or (high - 1) * growth + initial > 2147483647 // 265:
                     raise ValueError('等级过高，结合基板成长倍率会导致属性溢出。')
-            if {'createminnum', 'createmaxnum'} & changes.keys():
+            if creating or {'createminnum', 'createmaxnum'} & changes.keys():
                 if not 0 <= int(updated['createminnum']) <= int(updated['createmaxnum']):
                     raise ValueError('最小生成数量不能大于最大生成数量，且不能为负数。')
-            if changes:
+            if creating:
+                orders = self.connection.query(
+                    'SELECT source_order FROM enemy_templates ORDER BY source_order DESC LIMIT 1 FOR UPDATE')
+                updated['source_order'] = int(orders[0]['source_order']) + 1 if orders else 0
+                if updated['source_order'] > 4294967295:
+                    raise ValueError('记录加载顺序已达到上限，无法新增。')
+                identities = self.connection.query(
+                    'SELECT id FROM enemy_templates ORDER BY id DESC LIMIT 1 FOR UPDATE')
+                updated['id'] = max(0, int(identities[0]['id']) + 1) if identities else 0
+                if updated['id'] > 2147483647:
+                    raise ValueError('实例编号已达到上限，无法新增。')
+                columns = ','.join(f'`{key}`' for key in updated)
+                placeholders = ','.join('%s' for key in updated)
+                self.connection.write(f'INSERT INTO enemy_templates ({columns}) VALUES ({placeholders})',
+                                      tuple(updated.values()))
+            elif changes:
                 assignments = ','.join(f'`{key}`=%s' for key in changes)
                 self.connection.write(f'UPDATE enemy_templates SET {assignments} WHERE id=%s',
                                       (*changes.values(), original['id']))

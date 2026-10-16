@@ -21,6 +21,8 @@ class Browser(ttk.Frame):
         self.total = 0
         self.scope = None
         self.rows = {}
+        self.sort_key = None
+        self.sort_descending = False
         self.loaded = False
         self.generation = 0
         self.keyword = tk.StringVar()
@@ -30,16 +32,18 @@ class Browser(ttk.Frame):
         self.content = ttk.Frame(self)
         self.content.pack(fill='both', expand=True)
         bar = ttk.Frame(self.content)
-        if refresh_parent is None:
+        if refresh_parent is None and self.kind not in ('pets', 'items'):
             bar.pack(fill='x', pady=(0, 10))
         self.mode_box = ttk.Combobox(bar, values=[label for label, kind in modes],
                                      textvariable=self.mode, state='readonly', width=12)
         if len(modes) > 1:
             self.mode_box.pack(side='left', padx=(0, 10))
         self.mode_box.bind('<<ComboboxSelected>>', self.change_mode)
-        pet_page = self.kind == 'pet_templates'
+        pet_page = self.kind in ('pet_templates', 'enemy_templates')
+        pet_toolbar = self.kind in ('pet_templates', 'enemy_templates', 'enemy_groups',
+                                    'encounter_areas', 'pet_capture_requirements')
         self.search_entry = ttk.Entry(bar, textvariable=self.keyword)
-        if pet_page:
+        if pet_toolbar:
             self.search_entry.configure(width=24)
             self.search_entry.pack(side='left')
         elif not scoped:
@@ -49,15 +53,19 @@ class Browser(ttk.Frame):
         if self.kind in CACHED_KINDS:
             actions = (('搜索', self.search), ('清除筛选', self.clear_filter),
                        ('同步数据库', lambda: self.load(refresh=True)))
-        if pet_page:
-            actions = (('搜索', self.search), ('新增', self.new_template),
-                       ('删除', self.delete_template),
+        if pet_toolbar:
+            actions = (('搜索', self.search), ('新增', self.new_template if pet_page else None),
+                       ('删除', self.delete_template if pet_page else None),
                        ('同步数据库', lambda: self.load(refresh=True)))
+        if self.kind in ('pets', 'items'):
+            actions = ()
         for label, action in actions:
             button = ttk.Button(refresh_parent if refresh_parent is not None else bar,
                                 text='刷新角色' if refresh_parent is not None else label, command=action)
-            button.pack(side='right' if pet_page and label == '同步数据库' else 'left',
-                        padx=(6, 0))
+            if pet_toolbar:
+                button.configure(width=10)
+            button.pack(side='right' if pet_toolbar and label == '同步数据库' else 'left',
+                        padx=(8 if pet_toolbar else 6, 0))
             self.buttons.append(button)
         listing = ttk.Frame(self.content)
         listing.pack(fill='both', expand=True)
@@ -83,32 +91,42 @@ class Browser(ttk.Frame):
     def new_template(self):
         if not self.app.connected or self.app.busy:
             return
-        self.app.request(self, self.app.repository.new_pet_template_form,
-                         lambda result: TemplateEditor(self, result, creating=True))
+        if self.kind == 'enemy_templates':
+            self.app.request(self, self.app.repository.new_enemy_template_form,
+                             lambda result: self.show_instance_form(result, None, creating=True))
+        else:
+            self.app.request(self, self.app.repository.new_pet_template_form,
+                             lambda result: TemplateEditor(self, result, creating=True))
 
     def delete_template(self):
         if not self.app.connected or self.app.busy:
             return
+        enemy = self.kind == 'enemy_templates'
+        title = '实例' if enemy else '基板'
         selection = self.tree.selection()
         if not selection or selection[0] not in self.rows:
-            self.info.set('请先选择要删除的基板。')
+            self.info.set(f'请先选择要删除的{title}。')
             return
         identity = self.rows[selection[0]]['id']
 
         def failed(error):
             if isinstance(error, ValueError):
-                messagebox.showwarning('不能删除基板', str(error), parent=self)
+                messagebox.showwarning(f'不能删除{title}', str(error), parent=self)
 
         def confirm(result):
-            original = result['template']
-            if messagebox.askyesno('删除基板',
-                                   f'确定删除基板 #{identity}（{display(original["name"])}）？',
+            original = result['sections'][0][1][0] if enemy else result['template']
+            delete_record = (self.app.repository.delete_enemy_template if enemy else
+                             self.app.repository.delete_pet_template)
+            if messagebox.askyesno(f'删除{title}',
+                                   f'确定删除{title} #{identity}（{display(original["name"])}）？',
                                    parent=self):
-                self.app.request(self, lambda: self.app.repository.delete_pet_template(original),
+                self.app.request(self, lambda: delete_record(original),
                                  lambda result: self.app.after_idle(lambda: self.load(refresh=True)),
                                  on_error=failed)
 
-        self.app.request(self, lambda: self.app.repository.pet_template_delete_form(identity),
+        read_record = (self.app.repository.enemy_template_form if enemy else
+                       self.app.repository.pet_template_delete_form)
+        self.app.request(self, lambda: read_record(identity),
                          confirm, on_error=failed)
 
     def template_menu(self, event):
@@ -198,12 +216,38 @@ class Browser(ttk.Frame):
         self.tree.configure(columns=[key for key, label in columns])
         for key, label in columns:
             self.tree.heading(key, text=label, anchor='w')
+            if self.kind in ('pet_templates', 'enemy_templates'):
+                self.tree.heading(key, command=lambda column=key: self.sort_rows(column))
             self.tree.column(key, width=130, minwidth=20, stretch=True, anchor='w')
+
+    def sort_rows(self, key, toggle=True):
+        if self.kind not in ('pet_templates', 'enemy_templates'):
+            return
+        if toggle:
+            self.sort_descending = not self.sort_descending if self.sort_key == key else False
+            self.sort_key = key
+        present, missing = [], []
+        for identity in self.tree.get_children():
+            value = self.rows[identity].get(key)
+            if value is None:
+                missing.append(identity)
+            else:
+                value = display(value) if key in ('name', 'base_name') else int(value)
+                present.append((value, identity))
+        present.sort(key=lambda entry: entry[0], reverse=self.sort_descending)
+        for index, identity in enumerate([identity for value, identity in present] + missing):
+            self.tree.move(identity, '', index)
+        for column, label in CATALOGS[self.kind].columns:
+            suffix = (' ▼' if self.sort_descending else ' ▲') if column == key else ''
+            self.tree.heading(column, text=label + suffix)
 
     def set_enabled(self, enabled):
         state = 'normal' if enabled else 'disabled'
         for button in self.buttons:
-            button.configure(state=state)
+            unavailable = (self.kind in ('enemy_groups', 'encounter_areas',
+                                        'pet_capture_requirements')
+                           and button.cget('text') in ('新增', '删除'))
+            button.configure(state='disabled' if unavailable else state)
         self.search_entry.configure(state=state)
         self.mode_box.configure(state='readonly' if enabled else 'disabled')
 
@@ -251,6 +295,8 @@ class Browser(ttk.Frame):
             self.rows[identity] = row
             self.tree.insert('', 'end', iid=identity,
                              values=[cell(row, key, CATALOGS[self.kind]) for key, label in CATALOGS[self.kind].columns])
+        if self.sort_key is not None:
+            self.sort_rows(self.sort_key, toggle=False)
         scope = ' · 关联筛选' if self.scope else ''
         cached = ' · 优先使用本地缓存，数据变更后请更新缓存' if self.kind in CACHED_KINDS else ''
         self.info.set(f'共 {self.total} 条{scope}{cached}')
@@ -291,10 +337,11 @@ class Browser(ttk.Frame):
         self.app.request(self, lambda: self.app.repository.detail(kind, identity),
                          lambda result: self.show_detail(result, identity))
 
-    def show_instance_form(self, result, identity, group=False, area=False):
+    def show_instance_form(self, result, identity, group=False, area=False, creating=False):
         original = result['sections'][0][1][0]
         editable = (tuple(key for key in ENEMY_GROUP_FIELDS if key in original) if group else
-                    ('name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum'))
+                    ('tempno', 'name', 'lv_min', 'lv_max', 'createminnum', 'createmaxnum',
+                     'item1', 'item2', 'itemprob1', 'itemprob2'))
         save_record = (self.app.repository.save_enemy_group if group else
                        self.app.repository.save_enemy_template)
         if area:
@@ -307,6 +354,8 @@ class Browser(ttk.Frame):
         window.loaded = True
         window.info = tk.StringVar(value='')
         window.title(f'遇敌区域 #{identity}' if area else f'宠物实例{"组合" if group else ""} #{identity}')
+        if creating:
+            window.title('新增宠物实例')
         window.transient(self.app)
         self.app.center_window(window, 660, 560)
         content = ttk.Frame(window)
@@ -381,7 +430,7 @@ class Browser(ttk.Frame):
                     ttk.Label(form, text=key).grid(row=row_index, column=0, sticky='w',
                                                    padx=(0, 12), pady=5)
                     entry = ttk.Entry(form, width=14)
-                    entry.insert(0, display(value))
+                    entry.insert(0, '自动分配' if creating and key == 'id' else display(value))
                     entry.configure(state='normal' if key in editable else 'disabled')
                     fields[key] = entry
                     entry.grid(row=row_index, column=1, sticky='w', padx=(0, 12), pady=5)
@@ -405,7 +454,15 @@ class Browser(ttk.Frame):
             close_button.configure(state='normal')
 
         def saved(data):
-            nonlocal original
+            nonlocal original, creating
+            if creating:
+                creating = False
+                window.title(f'宠物实例 #{data["id"]}')
+                for key in ('id', 'source_order'):
+                    entry = fields[key]
+                    entry.configure(state='normal')
+                    entry.delete(0, 'end')
+                    entry.insert(0, display(data[key]))
             if area:
                 entry = fields['map_name']
                 entry.configure(state='normal')
@@ -440,7 +497,8 @@ class Browser(ttk.Frame):
             save_button.configure(state='disabled')
             close_button.configure(state='disabled')
             window.info.set('正在保存…')
-            self.app.request(window, lambda: save_record(original, values),
+            self.app.request(window, lambda: save_record(original, values, creating=True)
+                             if creating else save_record(original, values),
                              saved, on_error=failed)
 
         ttk.Label(actions, textvariable=window.info, wraplength=450).pack(side='left')
