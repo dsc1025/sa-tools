@@ -36,9 +36,17 @@ PET_TEMPLATE_FIELDS = {
 }
 
 PET_TEMPLATE_FIELDS.update({
-    f'pet_skill_id{index}': ('默认技能统一编号：0为空，NULL使用旧编号。', 0, 2147483647)
+    f'pet_skill_id{index}': ('默认技能统一编号：0为空，NULL使用旧编号。', 0, 1073741823)
     for index in range(1, 8)
 })
+
+
+PET_TEMPLATE_SKILL_FILTER = (
+    "enabled=1 AND skill_id>0 AND skill_id<1073741824 "
+    "AND ((adapter='pet' AND legacy_id>=0 AND legacy_id<1073741824) "
+    "OR (adapter IN ('magic','profession') AND field_type BETWEEN 0 AND 2 "
+    "AND target_type BETWEEN 0 AND 11))"
+)
 
 
 ENEMY_GROUP_FIELDS = {
@@ -283,14 +291,15 @@ CATALOGS = {
         ('p.name',) + tuple(f'CAST(r.item_id{index} AS CHAR)' for index in range(1, 16)),
         filters=(('id', 'r.pet_id'),)),
     'item_templates': Catalog(
-        'item_templates p', 'p.id,p.name,p.type,p.cost,p.imagenumber,p.skill_id', 'p.id',
+        'item_templates p', 'p.id,p.name,p.type,p.cost,p.imagenumber,p.skill_id,p.usefunc', 'p.id',
         (('id', '模板编号'), ('name', '名称'), ('type', '类型'), ('cost', '价格'),
-         ('imagenumber', '图像编号'), ('skill_id', '统一技能编号')),
+         ('imagenumber', '图像编号'), ('skill_id', '统一技能编号'), ('usefunc', 'usefunc')),
         ('p.name', 'p.secretname'), filters=(('id', 'p.id'),)),
     'skills': Catalog(
-        'skill_definitions s', 's.skill_id AS id,s.name,s.adapter,s.legacy_id,s.enabled,s.function_name',
+        'skill_definitions s', 's.skill_id AS id,s.name,s.adapter,s.legacy_id,s.enabled,s.function_registered,s.function_name',
         's.skill_id', (('id', '统一编号'), ('name', '名称'), ('adapter', '适配器'),
-                       ('legacy_id', '旧编号'), ('enabled', '启用'), ('function_name', '处理函数')),
+                       ('legacy_id', '旧编号'), ('enabled', '启用'), ('function_registered', '函数已注册'),
+                       ('function_name', '处理函数')),
         ('s.name', 's.skill_key', 's.function_name'), filters=(('id', 's.skill_id'),)),
 }
 
@@ -560,15 +569,8 @@ class Repository:
         with self.connection.snapshot():
             rows = self.connection.query('SELECT * FROM pet_base_templates WHERE tempno=%s LIMIT 1', (identity,))
             skills = self.connection.query(
-                "SELECT skill_id,name,adapter FROM skill_definitions WHERE enabled=1 "
-                "AND legacy_id IS NOT NULL AND legacy_id>=0 AND ((adapter='pet' AND legacy_id<1073741824) "
-                "OR (adapter='magic' AND skill_id<1073741824 AND legacy_id<=65535 "
-                "AND field_type<>2 "
-                "AND ((function_name='MAGIC_AttMagic' AND dead_target=0 AND target_type IN (1,4,8,9,10,11)) "
-                "OR (function_name<>'MAGIC_AttMagic' AND target_type IN (0,1,2,3,4,8,9) "
-                "AND NOT (function_name='MAGIC_Recovery' AND target_type=4))) "
-                "AND function_name IN ('MAGIC_AttMagic','MAGIC_Recovery','MAGIC_OtherRecovery',"
-                "'MAGIC_StatusRecovery','MAGIC_Ressurect'))) ORDER BY skill_id")
+                'SELECT skill_id,name,adapter,function_registered FROM skill_definitions WHERE '
+                + PET_TEMPLATE_SKILL_FILTER + ' ORDER BY skill_id')
         if identity is None:
             template = {key: 0 for key in PET_TEMPLATE_FIELDS}
             template.update(source_order=0, tempno='', name='', petflg=0, critical=0, counter=0)
@@ -652,18 +654,11 @@ class Repository:
             for key, value in changes.items():
                 if key.startswith('pet_skill_id') and value is not None and value > 0:
                     skills = self.connection.query(
-                        "SELECT skill_id FROM skill_definitions WHERE skill_id=%s AND enabled=1 "
-                        "AND legacy_id IS NOT NULL AND legacy_id>=0 AND ((adapter='pet' AND legacy_id<1073741824) "
-                        "OR (adapter='magic' AND skill_id<1073741824 AND legacy_id<=65535 "
-                        "AND field_type<>2 "
-                        "AND ((function_name='MAGIC_AttMagic' AND dead_target=0 AND target_type IN (1,4,8,9,10,11)) "
-                "OR (function_name<>'MAGIC_AttMagic' AND target_type IN (0,1,2,3,4,8,9) "
-                "AND NOT (function_name='MAGIC_Recovery' AND target_type=4))) "
-                "AND function_name IN ('MAGIC_AttMagic','MAGIC_Recovery','MAGIC_OtherRecovery',"
-                        "'MAGIC_StatusRecovery','MAGIC_Ressurect'))) LIMIT 1 FOR UPDATE",
+                        'SELECT skill_id FROM skill_definitions WHERE skill_id=%s AND '
+                        + PET_TEMPLATE_SKILL_FILTER + ' LIMIT 1 FOR UPDATE',
                         (value,))
                     if not skills:
-                        raise ValueError(f'{key} 必须选择已启用且可由宠物使用的技能统一编号。')
+                        raise ValueError(f'{key} 必须选择已启用且可加载到宠物技能槽的统一编号。')
             if changes:
                 assignments = ','.join(f'`{key}`=%s' for key in changes)
                 self.connection.write(f'UPDATE pet_base_templates SET {assignments} WHERE tempno=%s',
@@ -965,7 +960,7 @@ class Repository:
                         "SELECT a.field_key,a.numeric_value AS stored_id,s.skill_id,s.name,s.adapter,s.enabled "
                         "FROM pet_attributes a LEFT JOIN skill_definitions s ON "
                         "(a.numeric_value<1073741824 AND s.adapter='pet' AND s.legacy_id=a.numeric_value) OR "
-                        "(a.numeric_value>1073741824 AND s.adapter='magic' AND s.skill_id=a.numeric_value-1073741824) "
+                        "(a.numeric_value>1073741824 AND s.adapter IN ('magic','profession') AND s.skill_id=a.numeric_value-1073741824) "
                         "WHERE a.instance_id=%s AND CAST(a.field_key AS CHAR CHARACTER SET ascii) REGEXP '^psk[0-6]$' ORDER BY a.field_key LIMIT 10", (identity,))
                     sections.append(('宠技编号映射（最多10条）', skills, False))
                     growth_rows = self.connection.query(

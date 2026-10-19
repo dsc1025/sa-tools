@@ -13,9 +13,11 @@ class TemplateEditor(tk.Toplevel):
         self.creating = creating
         skills = data['skills']
         data = data['template']
+        adapters = {'pet': '宠技', 'magic': '魔法', 'profession': '职业技能'}
         self.skill_labels = {str(row['skill_id']):
                              f'{row["skill_id"]} · {display(row["name"])} · '
-                             f'{"魔法" if row["adapter"] == "magic" else "宠技"}'
+                             f'{adapters.get(row["adapter"], row["adapter"])}'
+                             + (' · 执行函数未注册' if not row['function_registered'] else '')
                              for row in skills}
         self.skill_labels.update({'0': '0 · 空技能', 'NULL': 'NULL · 使用旧编号'})
         self.skill_values = {label: identity for identity, label in self.skill_labels.items()}
@@ -25,6 +27,8 @@ class TemplateEditor(tk.Toplevel):
         self.saving = False
         self.info = tk.StringVar(value='')
         self.fields = {}
+        self.skill_popup = None
+        self.skill_box = None
         self.title('新增宠物基板' if creating else f'宠物基板 #{data["tempno"]}')
         self.transient(self.app)
         self.app.center_window(self, 660, 560)
@@ -54,7 +58,6 @@ class TemplateEditor(tk.Toplevel):
         row_index = 0
         leading = ('source_order', 'imgnumber', 'petflg', 'size', 'limitlevel')
         skills = ('slot',
-                  # *(f'petskill{index}' for index in range(1, 8)),
                   *(f'pet_skill_id{index}' for index in range(1, 8)))
         fields = (*leading, *(key for key in data if key not in leading and key not in skills
                              and not key.startswith('petskill')),
@@ -89,6 +92,10 @@ class TemplateEditor(tk.Toplevel):
                                      values=tuple(self.skill_labels.values()), state='normal')
                 variable.trace_add('write', lambda *args, box=entry, text=variable:
                                    self.filter_skills(box, text.get()))
+                entry.bind('<Down>', lambda event, box=entry: self.focus_skills(box))
+                entry.bind('<Escape>', self.hide_skills)
+                entry.bind('<Button-1>', self.hide_skills)
+                entry.bind('<FocusOut>', lambda event: self.after_idle(self.leave_skills))
             else:
                 entry = ttk.Entry(form, textvariable=variable, width=14)
             entry.grid(row=row_index, column=1,
@@ -115,6 +122,72 @@ class TemplateEditor(tk.Toplevel):
         if text not in self.skill_values and keyword:
             values = tuple(label for label in values if keyword in label.casefold())
         box.configure(values=values)
+        self.hide_skills()
+        if (not keyword or text in self.skill_values or not values
+                or self.saving or self.focus_get() is not box):
+            return
+        if self.skill_popup is None:
+            self.skill_popup = tk.Toplevel(self)
+            self.skill_popup.withdraw()
+            self.skill_popup.overrideredirect(True)
+            self.skill_popup.transient(self)
+            self.skill_list = tk.Listbox(self.skill_popup, exportselection=False)
+            self.skill_list.pack(side='left', fill='both', expand=True)
+            scroll = ttk.Scrollbar(self.skill_popup, command=self.skill_list.yview)
+            scroll.pack(side='right', fill='y')
+            self.skill_list.configure(yscrollcommand=scroll.set)
+            self.skill_list.bind('<ButtonRelease-1>', self.choose_skill)
+            self.skill_list.bind('<Return>', self.choose_skill)
+            self.skill_list.bind('<Escape>', self.cancel_skills)
+            self.skill_list.bind('<FocusOut>', lambda event: self.after_idle(self.leave_skills))
+        self.skill_box = box
+        self.skill_list.delete(0, 'end')
+        self.skill_list.insert('end', *values)
+        self.skill_list.configure(height=min(8, len(values)))
+        self.skill_popup.update_idletasks()
+        height = self.skill_popup.winfo_reqheight()
+        width = max(box.winfo_width(), self.skill_popup.winfo_reqwidth())
+        x = min(box.winfo_rootx(), max(0, self.winfo_screenwidth() - width))
+        y = box.winfo_rooty() + box.winfo_height()
+        if y + height > self.winfo_screenheight():
+            y = max(0, box.winfo_rooty() - height)
+        self.skill_popup.geometry(f'{width}x{height}+{x}+{y}')
+        self.skill_popup.deiconify()
+        self.skill_popup.lift()
+
+    def hide_skills(self, event=None):
+        if self.skill_popup is not None:
+            self.skill_popup.withdraw()
+        self.skill_box = None
+
+    def leave_skills(self):
+        if self.skill_box is not None and self.focus_get() not in (self.skill_box, self.skill_list):
+            self.hide_skills()
+
+    def focus_skills(self, box):
+        if self.skill_box is box:
+            self.skill_list.selection_set(0)
+            self.skill_list.activate(0)
+            self.skill_list.focus_set()
+            return 'break'
+
+    def choose_skill(self, event=None):
+        selection = self.skill_list.curselection()
+        box = self.skill_box
+        if selection and box is not None:
+            value = self.skill_list.get(selection[0])
+            self.hide_skills()
+            box.set(value)
+            box.icursor('end')
+            box.focus_set()
+        return 'break'
+
+    def cancel_skills(self, event=None):
+        box = self.skill_box
+        self.hide_skills()
+        if box is not None:
+            box.focus_set()
+        return 'break'
 
     def save(self):
         if self.saving or self.app.busy or not self.app.connected:
@@ -125,6 +198,7 @@ class TemplateEditor(tk.Toplevel):
             if key.startswith('pet_skill_id'):
                 text = values[key].strip()
                 values[key] = self.skill_values.get(text, text)
+        self.hide_skills()
         self.saving = True
         for variable, entry in self.fields.values():
             entry.configure(state='disabled')

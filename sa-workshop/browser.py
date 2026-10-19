@@ -216,12 +216,12 @@ class Browser(ttk.Frame):
         self.tree.configure(columns=[key for key, label in columns])
         for key, label in columns:
             self.tree.heading(key, text=label, anchor='w')
-            if self.kind in ('pet_templates', 'enemy_templates'):
+            if self.kind in ('pet_templates', 'enemy_templates', 'item_templates'):
                 self.tree.heading(key, command=lambda column=key: self.sort_rows(column))
             self.tree.column(key, width=130, minwidth=20, stretch=True, anchor='w')
 
     def sort_rows(self, key, toggle=True):
-        if self.kind not in ('pet_templates', 'enemy_templates'):
+        if self.kind not in ('pet_templates', 'enemy_templates', 'item_templates'):
             return
         if toggle:
             self.sort_descending = not self.sort_descending if self.sort_key == key else False
@@ -232,7 +232,7 @@ class Browser(ttk.Frame):
             if value is None:
                 missing.append(identity)
             else:
-                value = display(value) if key in ('name', 'base_name') else int(value)
+                value = display(value) if key in ('name', 'base_name', 'usefunc') else int(value)
                 present.append((value, identity))
         present.sort(key=lambda entry: entry[0], reverse=self.sort_descending)
         for index, identity in enumerate([identity for value, identity in present] + missing):
@@ -512,7 +512,7 @@ class Browser(ttk.Frame):
         meanings = {
             'source_order': '记录加载顺序。', 'id': '道具编号。',
             'name': '道具名称。', 'secretname': '道具隐藏名称。',
-            'effectstring': '道具效果说明。', 'argument': '道具功能参数，按原始格式显示。',
+            'effectstring': '道具效果说明。', 'argument': '道具功能参数；技能罐头仅在 skill_id 为 NULL 时按旧宠技编号读取。',
             'acode': '道具类型编码。', 'inlaycode': '镶嵌编码。',
             'initfunc': '初始化处理函数。', 'preoverfunc': '重叠前处理函数。',
             'postoverfunc': '重叠后处理函数。', 'watchfunc': '查看处理函数。',
@@ -529,7 +529,7 @@ class Browser(ttk.Frame):
             'maxdmce': '最大耐久配置值。', 'otdmags': '附加伤害配置值。',
             'otdefcs': '附加防御配置值。', 'nsuit': '套装编码。',
             'attrib': '属性类型配置值。', 'attribvalue': '属性数值。',
-            'magicid': '旧魔法编号。', 'magicprob': '魔法触发概率原始值。',
+            'magicid': '旧魔法编号；非技能罐头且 skill_id 为 NULL 时使用。', 'magicprob': '魔法触发概率原始值。',
             'magicusemp': '魔法消耗魔力。', 'arr': '排列修正配置值。',
             'seqce': '行动顺序修正配置值。', 'iapi': '装备叠加配置值。',
             'hirt': '命中修正配置值。', 'neguard': '忽略防御配置值。',
@@ -538,7 +538,7 @@ class Browser(ttk.Frame):
             'canpetmail': '允许宠物邮件传送标记。',
             'canmergefrom': '允许作为合成材料标记。', 'canmergeto': '允许作为合成结果标记。',
             'perception': '装备隐藏感知加成。',
-            'skill_id': '道具关联的统一技能编号，对应技能总表。',
+            'skill_id': '统一技能编号，可引用宠技、魔法或职业技能；0 为无技能，NULL 使用旧配置。技能罐头用于学习，其余道具用于施放。',
         }
         for key, label in (('attacknum', '攻击次数'), ('attack', '攻击修正'),
                            ('defence', '防御修正'), ('quick', '速度修正'),
