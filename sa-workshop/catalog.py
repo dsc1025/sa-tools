@@ -283,9 +283,9 @@ CATALOGS = {
         ('p.name',) + tuple(f'CAST(r.item_id{index} AS CHAR)' for index in range(1, 16)),
         filters=(('id', 'r.pet_id'),)),
     'item_templates': Catalog(
-        'item_templates p', 'p.id,p.name,p.type,p.cost,p.imagenumber,p.skill_id,p.pet_skill_id', 'p.id',
+        'item_templates p', 'p.id,p.name,p.type,p.cost,p.imagenumber,p.skill_id', 'p.id',
         (('id', '模板编号'), ('name', '名称'), ('type', '类型'), ('cost', '价格'),
-         ('imagenumber', '图像编号'), ('skill_id', '魔法统一编号'), ('pet_skill_id', '宠技统一编号')),
+         ('imagenumber', '图像编号'), ('skill_id', '统一技能编号')),
         ('p.name', 'p.secretname'), filters=(('id', 'p.id'),)),
     'skills': Catalog(
         'skill_definitions s', 's.skill_id AS id,s.name,s.adapter,s.legacy_id,s.enabled,s.function_name',

@@ -41,7 +41,7 @@ class Browser(ttk.Frame):
         self.mode_box.bind('<<ComboboxSelected>>', self.change_mode)
         pet_page = self.kind in ('pet_templates', 'enemy_templates')
         pet_toolbar = self.kind in ('pet_templates', 'enemy_templates', 'enemy_groups',
-                                    'encounter_areas', 'pet_capture_requirements')
+                                    'encounter_areas', 'pet_capture_requirements', 'item_templates')
         self.search_entry = ttk.Entry(bar, textvariable=self.keyword)
         if pet_toolbar:
             self.search_entry.configure(width=24)
@@ -245,7 +245,7 @@ class Browser(ttk.Frame):
         state = 'normal' if enabled else 'disabled'
         for button in self.buttons:
             unavailable = (self.kind in ('enemy_groups', 'encounter_areas',
-                                        'pet_capture_requirements')
+                                        'pet_capture_requirements', 'item_templates')
                            and button.cget('text') in ('新增', '删除'))
             button.configure(state='disabled' if unavailable else state)
         self.search_entry.configure(state=state)
@@ -508,7 +508,109 @@ class Browser(ttk.Frame):
         save_button.pack(side='right', padx=8)
         window.protocol('WM_DELETE_WINDOW', close)
 
+    def show_item_form(self, result, identity):
+        meanings = {
+            'source_order': '记录加载顺序。', 'id': '道具编号。',
+            'name': '道具名称。', 'secretname': '道具隐藏名称。',
+            'effectstring': '道具效果说明。', 'argument': '道具功能参数，按原始格式显示。',
+            'acode': '道具类型编码。', 'inlaycode': '镶嵌编码。',
+            'initfunc': '初始化处理函数。', 'preoverfunc': '重叠前处理函数。',
+            'postoverfunc': '重叠后处理函数。', 'watchfunc': '查看处理函数。',
+            'usefunc': '使用处理函数。', 'attachfunc': '装备处理函数。',
+            'detachfunc': '卸下处理函数。', 'dropfunc': '丢弃处理函数。',
+            'pickupfunc': '拾取处理函数。', 'relifefunc': '死亡重生处理函数。',
+            'imagenumber': '道具图像编号。', 'cost': '道具价格配置值。',
+            'type': '道具类型配置值。', 'fieldtype': '允许使用的场景配置值。',
+            'target': '使用目标配置值。', 'level': '道具等级配置值。',
+            'dambreak': '使用损耗配置值。', 'upinums': '叠加使用数量配置值。',
+            'campile': '允许叠加配置值。', 'nestr': '所需腕力。',
+            'nedex': '所需速度。', 'netra': '所需转生次数。',
+            'neprof': '所需职业配置值。', 'damcrushe': '耐久损耗配置值。',
+            'maxdmce': '最大耐久配置值。', 'otdmags': '附加伤害配置值。',
+            'otdefcs': '附加防御配置值。', 'nsuit': '套装编码。',
+            'attrib': '属性类型配置值。', 'attribvalue': '属性数值。',
+            'magicid': '旧魔法编号。', 'magicprob': '魔法触发概率原始值。',
+            'magicusemp': '魔法消耗魔力。', 'arr': '排列修正配置值。',
+            'seqce': '行动顺序修正配置值。', 'iapi': '装备叠加配置值。',
+            'hirt': '命中修正配置值。', 'neguard': '忽略防御配置值。',
+            'useaction': '使用动作编号。', 'dropatlogout': '登出时丢弃标记。',
+            'vanishatdrop': '丢弃时消失标记。', 'isovered': '允许重叠标记。',
+            'canpetmail': '允许宠物邮件传送标记。',
+            'canmergefrom': '允许作为合成材料标记。', 'canmergeto': '允许作为合成结果标记。',
+            'perception': '装备隐藏感知加成。',
+            'skill_id': '道具关联的统一技能编号，对应技能总表。',
+        }
+        for key, label in (('attacknum', '攻击次数'), ('attack', '攻击修正'),
+                           ('defence', '防御修正'), ('quick', '速度修正'),
+                           ('hp', '生命修正'), ('mp', '魔力修正'),
+                           ('luck', '运气修正'), ('charm', '魅力修正'),
+                           ('avoid', '闪避修正'), ('poison', '毒相关参数'),
+                           ('paralysis', '麻痹相关参数'), ('sleep', '睡眠相关参数'),
+                           ('stone', '石化相关参数'), ('drunk', '酒醉相关参数'),
+                           ('confusion', '混乱相关参数'), ('critical', '会心相关参数')):
+            meanings[f'{key}_min'] = f'{label}下限。'
+            meanings[f'{key}_max'] = f'{label}上限。'
+        for index in range(5):
+            meanings[f'ingname{index}'] = f'第 {index + 1} 个成分名称。'
+            meanings[f'ingvalue{index}'] = f'第 {index + 1} 个成分数值。'
+        window = tk.Toplevel(self)
+        window.title(f'道具详情 #{identity}')
+        window.transient(self.app)
+        self.app.center_window(window, 660, 560)
+        content = ttk.Frame(window)
+        content.pack(fill='both', expand=True)
+        canvas = tk.Canvas(content, highlightthickness=0)
+        canvas.pack(side='left', fill='both', expand=True)
+        scroll = ttk.Scrollbar(content, orient='vertical', command=canvas.yview)
+        scroll.pack(side='right', fill='y')
+        canvas.configure(yscrollcommand=scroll.set)
+        form = ttk.Frame(canvas, padding=12)
+        form_id = canvas.create_window((0, 0), window=form, anchor='nw')
+        form.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(form_id, width=event.width))
+        form.columnconfigure(2, weight=1)
+        wheel_delta = 0
+
+        def wheel(event):
+            nonlocal wheel_delta
+            if canvas.bbox('all') and canvas.bbox('all')[3] > canvas.winfo_height():
+                wheel_delta += event.delta
+                steps = int(wheel_delta / 120)
+                wheel_delta -= steps * 120
+                canvas.yview_scroll(-steps * 3, 'units')
+            return 'break'
+
+        window.bind('<MouseWheel>', wheel)
+        row_index = 0
+        for title, rows, attributes in result['sections']:
+            ttk.Label(form, text=title).grid(row=row_index, column=0, columnspan=3,
+                                            sticky='w', pady=(0, 8))
+            row_index += 1
+            if not rows:
+                ttk.Label(form, text='无记录').grid(row=row_index, column=0, sticky='w')
+                row_index += 1
+            for row in rows:
+                for key, value in row.items():
+                    if key == 'pet_skill_id':
+                        continue
+                    ttk.Label(form, text=key).grid(row=row_index, column=0, sticky='w',
+                                                   padx=(0, 12), pady=5)
+                    entry = ttk.Entry(form, width=24)
+                    entry.insert(0, display(value))
+                    entry.configure(state='readonly')
+                    entry.grid(row=row_index, column=1, sticky='w', padx=(0, 12), pady=5)
+                    ttk.Label(form, text=meanings.get(key, '原始字段，当前仅支持查看。'),
+                              wraplength=260).grid(row=row_index, column=2, sticky='w', pady=5)
+                    row_index += 1
+        actions = ttk.Frame(window, padding=12)
+        actions.pack(fill='x')
+        ttk.Label(actions, text='道具详情 · 只读').pack(side='left')
+        ttk.Button(actions, text='关闭', command=window.destroy).pack(side='right')
+
     def show_detail(self, result, identity):
+        if self.kind == 'item_templates':
+            self.show_item_form(result, identity)
+            return
         if self.kind in ('enemy_templates', 'enemy_groups', 'encounter_areas'):
             self.show_instance_form(result, identity, group=self.kind == 'enemy_groups',
                                     area=self.kind == 'encounter_areas')
