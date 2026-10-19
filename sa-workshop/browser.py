@@ -9,6 +9,7 @@ from cache import CACHED_KINDS
 from account_editor import AccountEditor
 from player_editor import PlayerEditor
 from template_editor import TemplateEditor
+from black_shop_editor import BlackShopEditor
 
 
 class Browser(ttk.Frame):
@@ -41,7 +42,8 @@ class Browser(ttk.Frame):
         self.mode_box.bind('<<ComboboxSelected>>', self.change_mode)
         pet_page = self.kind in ('pet_templates', 'enemy_templates')
         pet_toolbar = self.kind in ('pet_templates', 'enemy_templates', 'enemy_groups',
-                                    'encounter_areas', 'pet_capture_requirements', 'item_templates')
+                                    'encounter_areas', 'pet_capture_requirements', 'item_templates',
+                                    'black_shop_items')
         self.search_entry = ttk.Entry(bar, textvariable=self.keyword)
         if pet_toolbar:
             self.search_entry.configure(width=24)
@@ -56,6 +58,10 @@ class Browser(ttk.Frame):
         if pet_toolbar:
             actions = (('搜索', self.search), ('新增', self.new_template if pet_page else None),
                        ('删除', self.delete_template if pet_page else None),
+                       ('同步数据库', lambda: self.load(refresh=True)))
+        if self.kind == 'black_shop_items':
+            actions = (('搜索', self.search), ('新增', self.new_black_shop),
+                       ('删除', self.delete_black_shop),
                        ('同步数据库', lambda: self.load(refresh=True)))
         if self.kind in ('pets', 'items'):
             actions = ()
@@ -97,6 +103,24 @@ class Browser(ttk.Frame):
         else:
             self.app.request(self, self.app.repository.new_pet_template_form,
                              lambda result: TemplateEditor(self, result, creating=True))
+
+    def new_black_shop(self):
+        if self.app.connected and not self.app.busy:
+            self.app.request(self, self.app.repository.black_shop_form,
+                             lambda result: BlackShopEditor(self, result))
+
+    def delete_black_shop(self):
+        if not self.app.connected or self.app.busy or not self.tree.selection():
+            return
+        identity = self.rows[self.tree.selection()[0]]['id']
+
+        def confirm(data):
+            if messagebox.askyesno('删除商品', f'确定从黑店删除商品 #{identity}？', parent=self):
+                self.app.after_idle(lambda: self.app.request(
+                    self, lambda: self.app.repository.delete_black_shop(data['original']),
+                    lambda result: self.app.after_idle(lambda: self.load(refresh=True))))
+
+        self.app.request(self, lambda: self.app.repository.black_shop_form(identity), confirm)
 
     def delete_template(self):
         if not self.app.connected or self.app.busy:
@@ -310,6 +334,10 @@ class Browser(ttk.Frame):
             return
         identity = self.rows[self.tree.selection()[0]]['id']
         kind = self.kind
+        if kind == 'black_shop_items':
+            self.app.request(self, lambda: self.app.repository.black_shop_form(identity),
+                             lambda result: BlackShopEditor(self, result))
+            return
         if kind == 'accounts':
             self.app.request(self, lambda: self.app.repository.account_form(identity),
                              lambda result: AccountEditor(self, result))

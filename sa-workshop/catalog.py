@@ -295,6 +295,17 @@ CATALOGS = {
         (('id', '模板编号'), ('name', '名称'), ('type', '类型'), ('cost', '价格'),
          ('imagenumber', '图像编号'), ('skill_id', '统一技能编号'), ('usefunc', 'usefunc')),
         ('p.name', 'p.secretname'), filters=(('id', 'p.id'),)),
+    'black_shop_items': Catalog(
+        'black_shop_items b JOIN item_templates p ON p.id=b.item_id',
+        'p.id,p.name,p.type,b.enabled,b.cost,b.pearl,b.stock,'
+        'CASE WHEN b.cost IS NULL OR b.cost=-1 THEN p.cost ELSE b.cost END AS gold_cost,'
+        'p.imagenumber,p.level',
+        'b.item_id',
+        (('id', '道具编号'), ('name', '名称'), ('type', '类型'),
+         ('enabled', '启用'), ('gold_cost', '金币价格'),
+         ('pearl', 'P 价格'), ('stock', '库存'),
+         ('imagenumber', '图像编号'), ('level', '等级')),
+        ('p.name', 'p.secretname'), filters=(('id', 'b.item_id'),)),
     'skills': Catalog(
         'skill_definitions s', 's.skill_id AS id,s.name,s.adapter,s.legacy_id,s.enabled,s.function_registered,s.function_name',
         's.skill_id', (('id', '统一编号'), ('name', '名称'), ('adapter', '适配器'),
@@ -305,6 +316,11 @@ CATALOGS = {
 
 
 def cell(row, key, catalog):
+    if catalog is CATALOGS['black_shop_items']:
+        if key == 'stock' and row.get(key) == -1:
+            return '不限量'
+        if key == 'pearl' and row.get(key) in (None, -1):
+            return '未启用'
     return display(row.get(key))
 
 
@@ -510,7 +526,8 @@ class Repository:
             parameters.append(number)
         where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
         with self.connection.snapshot():
-            sql = f'SELECT {catalog.select} FROM {catalog.source}{where} ORDER BY {catalog.key}'
+            order = 'b.category,b.sort_order,b.item_id' if kind == 'black_shop_items' else catalog.key
+            sql = f'SELECT {catalog.select} FROM {catalog.source}{where} ORDER BY {order}'
             if page is None:
                 rows = self.connection.query(sql, parameters)
                 total = len(rows)
@@ -540,6 +557,66 @@ class Repository:
 
     def new_pet_template_form(self):
         return self.pet_template_form(None)
+
+    def black_shop_form(self, identity=None):
+        items = self.page('item_templates', '', page=None)['rows']
+        rows = []
+        if identity is not None:
+            with self.connection.snapshot():
+                rows = self.connection.query('SELECT * FROM black_shop_items WHERE item_id=%s', (identity,))
+        if identity is not None and not rows:
+            raise QueryFailure('商品已不存在，请刷新列表。')
+        return {'items': items, 'original': rows[0] if rows else None}
+
+    def save_black_shop(self, original, values):
+        updated = {}
+        for key in ('item_id', 'enabled', 'cost', 'pearl', 'stock'):
+            text = values[key].strip()
+            if key in ('cost', 'pearl') and text.upper() in ('', 'NULL'):
+                updated[key] = None
+                continue
+            try:
+                value = int(text)
+            except ValueError:
+                raise ValueError(f'{key} 必须为整数。') from None
+            lower, upper = {'item_id': (0, 2147483647),
+                            'enabled': (0, 1),
+                            'cost': (-1, 2147483647), 'pearl': (-1, 2147483647),
+                            'stock': (-1, 2147483647)}[key]
+            if not lower <= value <= upper:
+                raise ValueError(f'{key} 必须在 {lower}～{upper} 之间。')
+            updated[key] = value
+        updated['category'] = original['category'] if original else 0
+        updated['sort_order'] = original['sort_order'] if original else 0
+        identity = updated['item_id']
+        with self.connection.transaction():
+            rows = self.connection.query(
+                'SELECT * FROM black_shop_items WHERE item_id=%s FOR UPDATE', (identity,))
+            if original is None and rows:
+                raise ValueError('该道具已在黑店中，请刷新列表后编辑。')
+            if original is not None and (identity != original['item_id'] or not rows or rows[0] != original):
+                raise QueryFailure('商品配置或库存已变化，请关闭表单并重新读取。')
+            if not self.connection.query('SELECT id FROM item_templates WHERE id=%s FOR UPDATE', (identity,)):
+                raise ValueError('请选择有效的道具基板。')
+            if original is None:
+                fields = ','.join(updated)
+                placeholders = ','.join('%s' for key in updated)
+                self.connection.write(f'INSERT INTO black_shop_items ({fields}) VALUES ({placeholders})',
+                                      tuple(updated.values()))
+            else:
+                changes = {key: value for key, value in updated.items() if key != 'item_id'}
+                assignments = ','.join(f'{key}=%s' for key in changes)
+                self.connection.write(f'UPDATE black_shop_items SET {assignments} WHERE item_id=%s',
+                                      (*changes.values(), identity))
+        return updated
+
+    def delete_black_shop(self, original):
+        with self.connection.transaction():
+            rows = self.connection.query(
+                'SELECT * FROM black_shop_items WHERE item_id=%s FOR UPDATE', (original['item_id'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('商品配置或库存已变化，请刷新后重试。')
+            self.connection.write('DELETE FROM black_shop_items WHERE item_id=%s', (original['item_id'],))
 
     def pet_template_delete_form(self, identity):
         enemies = self.connection.query(
@@ -981,6 +1058,9 @@ class Repository:
                     'pet_capture_requirements': ('捕捉条件字段', 'pet_id'),
                 }[kind]
                 section(title, f'SELECT * FROM {kind} WHERE {key}=%s')
+            elif kind == 'black_shop_items':
+                section('黑店配置', 'SELECT * FROM black_shop_items WHERE item_id=%s')
+                section('道具基板', 'SELECT * FROM item_templates WHERE id=%s')
             elif kind == 'skills':
                 section('技能字段', 'SELECT * FROM skill_definitions WHERE skill_id=%s')
                 section('配置引用', 'SELECT * FROM skill_references WHERE skill_id=%s ORDER BY source_type,source_key,slot', limit=10)

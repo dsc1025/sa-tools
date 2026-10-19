@@ -23,6 +23,7 @@ class Workshop(tk.Tk):
         self.pages = []
         self.pet_pages = []
         self.ride_pages = []
+        self.item_pages = []
         self.selected_account = None
         self.selected_character = None
         self.account_name = ''
@@ -123,9 +124,13 @@ class Workshop(tk.Tk):
             self.pet_pages.append(page)
             self.pages.append(page)
             self.pet_tabs.add(page, text=title)
-        self.item_page = Browser(body, self, (('道具总表', 'item_templates'),))
-        self.pages.append(self.item_page)
-        body.add(self.item_page, text='道具')
+        self.item_tabs = ttk.Notebook(body)
+        body.add(self.item_tabs, text='道具')
+        for title, kind in (('基板', 'item_templates'), ('黑店', 'black_shop_items')):
+            page = Browser(self.item_tabs, self, ((title, kind),))
+            self.item_pages.append(page)
+            self.pages.append(page)
+            self.item_tabs.add(page, text=title)
         self.skill_page = Browser(body, self, (('技能魔法总表', 'skills'),))
         self.pages.append(self.skill_page)
         body.add(self.skill_page, text='技能')
@@ -142,6 +147,7 @@ class Workshop(tk.Tk):
         body.bind('<<NotebookTabChanged>>', self.tab_changed)
         self.assets_tabs.bind('<<NotebookTabChanged>>', self.refresh_assets)
         self.pet_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
+        self.item_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         self.ride_tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         profiles = ttk.Frame(panel)
         profiles.pack(fill='x', pady=(0, 10))
@@ -323,18 +329,25 @@ class Workshop(tk.Tk):
         self.connect_button.configure(state='normal' if editable else 'disabled')
         self.disconnect_button.configure(state='normal' if self.connected and not self.busy else 'disabled')
         for page in self.pages:
-            allowed = (page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page)
+            allowed = (page in self.pet_pages or page in self.ride_pages or page in self.item_pages or page is self.skill_page
                        or page.kind == 'accounts' or page.scope is not None)
             page.set_enabled(self.connected and not self.busy and allowed)
 
     def tab_changed(self, event=None):
         if not self.connected or self.busy:
             return
-        for page in (self.item_page, self.skill_page):
+        for page in (self.skill_page,):
             if str(self.notebook.select()) == str(page):
                 if not page.loaded:
                     page.search()
                 return
+        if str(self.notebook.select()) == str(self.item_tabs):
+            selected = str(self.item_tabs.select())
+            for page in self.item_pages:
+                if str(page) == selected and not page.loaded:
+                    page.search()
+                    break
+            return
         if str(self.notebook.select()) == str(self.ride_tabs):
             selected = str(self.ride_tabs.select())
             for page in self.ride_pages:
@@ -376,7 +389,7 @@ class Workshop(tk.Tk):
             page.search()
 
     def selected_row(self, page, row, refresh=False):
-        if page in self.pet_pages or page in self.ride_pages or page in (self.item_page, self.skill_page):
+        if page in self.pet_pages or page in self.ride_pages or page in self.item_pages or page is self.skill_page:
             return
         if page.kind == 'accounts':
             identity = row['id']
