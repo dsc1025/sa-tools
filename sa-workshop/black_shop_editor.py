@@ -23,8 +23,8 @@ class BlackShopEditor(TemplateEditor):
                              for row in data['items']}
         self.skill_values = {label: identity for identity, label in self.skill_labels.items()}
         values = self.original or dict(item_id='', enabled=1,
-                                       cost=None, pearl=None, stock=-1)
-        self.title('黑店商品' if self.original else '新增黑店商品')
+                                       cost=None, pearl=1, stock=-1)
+        self.title('黑市商品' if self.original else '新增黑市商品')
         self.transient(self.app)
         form = ttk.Frame(self, padding=16)
         form.pack(fill='both', expand=True)

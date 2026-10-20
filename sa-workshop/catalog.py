@@ -593,7 +593,7 @@ class Repository:
             rows = self.connection.query(
                 'SELECT * FROM black_shop_items WHERE item_id=%s FOR UPDATE', (identity,))
             if original is None and rows:
-                raise ValueError('该道具已在黑店中，请刷新列表后编辑。')
+                raise ValueError('该道具已在黑市中，请刷新列表后编辑。')
             if original is not None and (identity != original['item_id'] or not rows or rows[0] != original):
                 raise QueryFailure('商品配置或库存已变化，请关闭表单并重新读取。')
             if not self.connection.query('SELECT id FROM item_templates WHERE id=%s FOR UPDATE', (identity,)):
@@ -1059,7 +1059,7 @@ class Repository:
                 }[kind]
                 section(title, f'SELECT * FROM {kind} WHERE {key}=%s')
             elif kind == 'black_shop_items':
-                section('黑店配置', 'SELECT * FROM black_shop_items WHERE item_id=%s')
+                section('黑市配置', 'SELECT * FROM black_shop_items WHERE item_id=%s')
                 section('道具基板', 'SELECT * FROM item_templates WHERE id=%s')
             elif kind == 'skills':
                 section('技能字段', 'SELECT * FROM skill_definitions WHERE skill_id=%s')

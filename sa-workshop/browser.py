@@ -115,7 +115,7 @@ class Browser(ttk.Frame):
         identity = self.rows[self.tree.selection()[0]]['id']
 
         def confirm(data):
-            if messagebox.askyesno('删除商品', f'确定从黑店删除商品 #{identity}？', parent=self):
+            if messagebox.askyesno('删除商品', f'确定从黑市删除商品 #{identity}？', parent=self):
                 self.app.after_idle(lambda: self.app.request(
                     self, lambda: self.app.repository.delete_black_shop(data['original']),
                     lambda result: self.app.after_idle(lambda: self.load(refresh=True))))

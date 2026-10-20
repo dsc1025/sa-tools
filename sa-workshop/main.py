@@ -126,7 +126,7 @@ class Workshop(tk.Tk):
             self.pet_tabs.add(page, text=title)
         self.item_tabs = ttk.Notebook(body)
         body.add(self.item_tabs, text='道具')
-        for title, kind in (('基板', 'item_templates'), ('黑店', 'black_shop_items')):
+        for title, kind in (('基板', 'item_templates'), ('黑市', 'black_shop_items')):
             page = Browser(self.item_tabs, self, ((title, kind),))
             self.item_pages.append(page)
             self.pages.append(page)
