@@ -81,13 +81,11 @@ class BlackShopEditor(TemplateEditor):
                          self.saved, on_error=self.failed)
 
     def saved(self, data):
-        creating = self.original is None
         self.original = data
         self.finish()
         self.info.set('已保存。')
         self.app.after_idle(lambda: self.page.load(refresh=True))
-        if creating:
-            self.close()
+        self.close()
 
     def failed(self, error):
         if self.winfo_exists():
