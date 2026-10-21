@@ -23,7 +23,7 @@ class BlackShopEditor(TemplateEditor):
                              for row in data['items']}
         self.skill_values = {label: identity for identity, label in self.skill_labels.items()}
         values = self.original or dict(item_id='', enabled=1,
-                                       cost=None, pearl=1, stock=-1)
+                                       cost=-1, pearl=1, stock=-1)
         self.title('黑市商品' if self.original else '新增黑市商品')
         self.transient(self.app)
         form = ttk.Frame(self, padding=16)
@@ -52,8 +52,8 @@ class BlackShopEditor(TemplateEditor):
                 widget = ttk.Entry(form, textvariable=variable)
             widget.grid(row=index, column=1, sticky='ew', pady=6)
             self.fields[key] = (variable, widget)
-        ttk.Label(form, text='金币：NULL / -1 使用基板价格；P：NULL / -1 禁用，0 为免费。\n'
-                            '可任选金币或 P 支付；P 使用会员积分。库存 -1 为不限量。',
+        ttk.Label(form, text='金币：空值 / NULL 使用基板价格，-1 禁用，0 免费，>0 指定价格。\n'
+                            'P：NULL / -1 禁用，0 免费，>0 指定价格；使用会员积分。库存 -1 为不限量。',
                   wraplength=460).grid(row=5, column=0, columnspan=2, sticky='w', pady=8)
         ttk.Label(form, textvariable=self.info, wraplength=460).grid(row=6, column=0, columnspan=2, sticky='w')
         actions = ttk.Frame(form)

@@ -298,7 +298,7 @@ CATALOGS = {
     'black_shop_items': Catalog(
         'black_shop_items b JOIN item_templates p ON p.id=b.item_id',
         'p.id,p.name,p.type,b.enabled,b.cost,b.pearl,b.stock,'
-        'CASE WHEN b.cost IS NULL OR b.cost=-1 THEN p.cost ELSE b.cost END AS gold_cost,'
+        'CASE WHEN b.cost IS NULL THEN p.cost ELSE b.cost END AS gold_cost,'
         'p.imagenumber,p.level',
         'b.item_id',
         (('id', '道具编号'), ('name', '名称'), ('type', '类型'),
@@ -319,7 +319,7 @@ def cell(row, key, catalog):
     if catalog is CATALOGS['black_shop_items']:
         if key == 'stock' and row.get(key) == -1:
             return '不限量'
-        if key == 'pearl' and row.get(key) in (None, -1):
+        if (key == 'gold_cost' and row.get(key) == -1) or (key == 'pearl' and row.get(key) in (None, -1)):
             return '未启用'
     return display(row.get(key))
 
