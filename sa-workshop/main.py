@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, ttk
 
 from browser import Browser
+from auction_page import AuctionPage
 from catalog import Repository, display
 from connection import Connection, ConnectionFailure, QueryFailure
 from settings import Profile, Settings
@@ -134,6 +135,9 @@ class Workshop(tk.Tk):
         self.skill_page = Browser(body, self, (('技能魔法总表', 'skills'),))
         self.pages.append(self.skill_page)
         body.add(self.skill_page, text='技能')
+        self.auction_page = AuctionPage(body, self)
+        self.pages.append(self.auction_page)
+        body.add(self.auction_page, text='竞拍')
         self.ride_tabs = ttk.Notebook(body)
         body.add(self.ride_tabs, text='骑乘')
         for title, kind in (('默认映射', 'ride_base'), ('骑宠许可', 'ride_pet'),
@@ -329,14 +333,14 @@ class Workshop(tk.Tk):
         self.connect_button.configure(state='normal' if editable else 'disabled')
         self.disconnect_button.configure(state='normal' if self.connected and not self.busy else 'disabled')
         for page in self.pages:
-            allowed = (page in self.pet_pages or page in self.ride_pages or page in self.item_pages or page is self.skill_page
+            allowed = (page in self.pet_pages or page in self.ride_pages or page in self.item_pages or page in (self.skill_page, self.auction_page)
                        or page.kind == 'accounts' or page.scope is not None)
             page.set_enabled(self.connected and not self.busy and allowed)
 
     def tab_changed(self, event=None):
         if not self.connected or self.busy:
             return
-        for page in (self.skill_page,):
+        for page in (self.skill_page, self.auction_page):
             if str(self.notebook.select()) == str(page):
                 if not page.loaded:
                     page.search()
@@ -389,7 +393,7 @@ class Workshop(tk.Tk):
             page.search()
 
     def selected_row(self, page, row, refresh=False):
-        if page in self.pet_pages or page in self.ride_pages or page in self.item_pages or page is self.skill_page:
+        if page in self.pet_pages or page in self.ride_pages or page in self.item_pages or page in (self.skill_page, self.auction_page):
             return
         if page.kind == 'accounts':
             identity = row['id']
