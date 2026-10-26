@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from catalog import CATALOGS, ENEMY_GROUP_FIELDS, ENCOUNTER_AREA_FIELDS, cell, display
+from catalog import CATALOGS, ENEMY_GROUP_FIELDS, ENCOUNTER_AREA_FIELDS, ITEM_TEMPLATE_FIELDS, cell, display
 from connection import ConnectionFailure, QueryFailure
 from cache import CACHED_KINDS
 from account_editor import AccountEditor
@@ -537,8 +537,21 @@ class Browser(ttk.Frame):
         window.protocol('WM_DELETE_WINDOW', close)
 
     def show_item_form(self, result, identity):
+        original = result['sections'][0][1][0] if result['sections'][0][1] else None
+        fields = {}
+        saving = False
+        adapters = {'pet': '宠技', 'magic': '魔法', 'profession': '职业技能'}
+        skill_labels = {str(row['skill_id']):
+                        f'{row["skill_id"]} · {display(row["name"])} · '
+                        f'{adapters.get(row["adapter"], row["adapter"])}'
+                        + (' · 执行函数未注册' if not row['function_registered'] else '')
+                        for row in result['skills']}
+        skill_labels.update({'0': '0 · 无技能', 'NULL': 'NULL · 使用旧配置'})
+        skill_values = {label: identity for identity, label in skill_labels.items()}
+        skill_popup = None
+        skill_box = None
         meanings = {
-            'source_order': '记录加载顺序。', 'id': '道具编号。',
+            'id': '道具模板编号。',
             'name': '道具名称。', 'secretname': '道具隐藏名称。',
             'effectstring': '道具效果说明。', 'argument': '道具功能参数；技能罐头仅在 skill_id 为 NULL 时按旧宠技编号读取。',
             'acode': '道具类型编码。', 'inlaycode': '镶嵌编码。',
@@ -583,6 +596,8 @@ class Browser(ttk.Frame):
             meanings[f'ingvalue{index}'] = f'第 {index + 1} 个成分数值。'
         window = tk.Toplevel(self)
         window.title(f'道具详情 #{identity}')
+        window.generation = 0
+        window.info = tk.StringVar(value='可编辑属性上下限、耐久及统一技能。技能支持编号或名称搜索。')
         window.transient(self.app)
         self.app.center_window(window, 660, 560)
         content = ttk.Frame(window)
@@ -609,6 +624,78 @@ class Browser(ttk.Frame):
             return 'break'
 
         window.bind('<MouseWheel>', wheel)
+
+        def hide_skills(event=None):
+            if skill_popup is not None:
+                skill_popup.withdraw()
+
+        def leave_skills():
+            if skill_popup is not None and window.focus_get() not in (skill_box, skill_list):
+                hide_skills()
+
+        def choose_skill(event=None):
+            selection = skill_list.curselection()
+            if selection:
+                value = skill_list.get(selection[0])
+                hide_skills()
+                skill_box.set(value)
+                skill_box.icursor('end')
+                skill_box.focus_set()
+            return 'break'
+
+        def cancel_skills(event=None):
+            hide_skills()
+            skill_box.focus_set()
+            return 'break'
+
+        def focus_skills(event=None):
+            if skill_popup is not None and skill_popup.winfo_viewable():
+                skill_list.selection_set(0)
+                skill_list.activate(0)
+                skill_list.focus_set()
+                return 'break'
+
+        def filter_skills(*args):
+            nonlocal skill_popup, skill_list
+            text = skill_variable.get()
+            keyword = text.strip().casefold()
+            values = tuple(skill_labels.values())
+            if text not in skill_values and keyword:
+                values = tuple(label for label in values if keyword in label.casefold())
+            skill_box.configure(values=values)
+            hide_skills()
+            if (not keyword or text in skill_values or not values
+                    or saving or window.focus_get() is not skill_box):
+                return
+            if skill_popup is None:
+                skill_popup = tk.Toplevel(window)
+                skill_popup.withdraw()
+                skill_popup.overrideredirect(True)
+                skill_popup.transient(window)
+                skill_list = tk.Listbox(skill_popup, exportselection=False)
+                skill_list.pack(side='left', fill='both', expand=True)
+                scrollbar = ttk.Scrollbar(skill_popup, command=skill_list.yview)
+                scrollbar.pack(side='right', fill='y')
+                skill_list.configure(yscrollcommand=scrollbar.set)
+                skill_list.bind('<ButtonRelease-1>', choose_skill)
+                skill_list.bind('<Return>', choose_skill)
+                skill_list.bind('<Escape>', cancel_skills)
+                skill_list.bind('<FocusOut>', lambda event: window.after_idle(leave_skills))
+            skill_list.delete(0, 'end')
+            skill_list.insert('end', *values)
+            skill_list.configure(height=min(8, len(values)))
+            skill_popup.update_idletasks()
+            height = skill_popup.winfo_reqheight()
+            width = max(skill_box.winfo_width(), skill_popup.winfo_reqwidth())
+            x = min(skill_box.winfo_rootx(), max(0, window.winfo_screenwidth() - width))
+            y = skill_box.winfo_rooty() + skill_box.winfo_height()
+            if y + height > window.winfo_screenheight():
+                y = max(0, skill_box.winfo_rooty() - height)
+            skill_popup.geometry(f'{width}x{height}+{x}+{y}')
+            skill_popup.deiconify()
+            skill_popup.lift()
+
+        skill_list = None
         row_index = 0
         for title, rows, attributes in result['sections']:
             ttk.Label(form, text=title).grid(row=row_index, column=0, columnspan=3,
@@ -618,22 +705,96 @@ class Browser(ttk.Frame):
                 ttk.Label(form, text='无记录').grid(row=row_index, column=0, sticky='w')
                 row_index += 1
             for row in rows:
-                for key, value in row.items():
-                    if key == 'pet_skill_id':
+                for key in (('id',) if 'id' in row else ()) + tuple(key for key in row if key != 'id'):
+                    if key in ('source_order', 'pet_skill_id'):
                         continue
-                    ttk.Label(form, text=key).grid(row=row_index, column=0, sticky='w',
+                    value = row[key]
+                    ttk.Label(form, text='模板编号' if key == 'id' else key).grid(row=row_index, column=0, sticky='w',
                                                    padx=(0, 12), pady=5)
-                    entry = ttk.Entry(form, width=24)
-                    entry.insert(0, display(value))
-                    entry.configure(state='readonly')
-                    entry.grid(row=row_index, column=1, sticky='w', padx=(0, 12), pady=5)
+                    if key == 'skill_id':
+                        skill_variable = tk.StringVar(value=skill_labels.get(display(value), display(value)))
+                        entry = skill_box = ttk.Combobox(form, textvariable=skill_variable, width=36,
+                                                        values=tuple(skill_labels.values()))
+                        skill_variable.trace_add('write', filter_skills)
+                        entry.bind('<Down>', focus_skills)
+                        entry.bind('<Escape>', hide_skills)
+                        entry.bind('<Button-1>', hide_skills)
+                        entry.bind('<FocusOut>', lambda event: window.after_idle(leave_skills))
+                    else:
+                        entry = ttk.Entry(form, width=24)
+                        entry.insert(0, display(value))
+                    entry.configure(state='normal' if key in ITEM_TEMPLATE_FIELDS else 'readonly')
+                    if key in ITEM_TEMPLATE_FIELDS:
+                        fields[key] = entry
+                    entry.grid(row=row_index, column=1, columnspan=2 if key == 'skill_id' else 1,
+                               sticky='w', padx=(0, 12), pady=5)
+                    if key == 'skill_id':
+                        row_index += 1
                     ttk.Label(form, text=meanings.get(key, '原始字段，当前仅支持查看。'),
                               wraplength=260).grid(row=row_index, column=2, sticky='w', pady=5)
                     row_index += 1
         actions = ttk.Frame(window, padding=12)
         actions.pack(fill='x')
-        ttk.Label(actions, text='道具详情 · 只读').pack(side='left')
-        ttk.Button(actions, text='关闭', command=window.destroy).pack(side='right')
+
+        def close():
+            if not saving:
+                hide_skills()
+                window.generation += 1
+                window.destroy()
+
+        def finish():
+            nonlocal saving
+            saving = False
+            for entry in fields.values():
+                entry.configure(state='normal')
+            save_button.configure(state='normal' if original is not None else 'disabled')
+            close_button.configure(state='normal')
+
+        def saved(data):
+            nonlocal original
+            original = data
+            finish()
+            for key, entry in fields.items():
+                if key == 'skill_id':
+                    entry.set(skill_labels.get(display(data[key]), display(data[key])))
+                else:
+                    entry.delete(0, 'end')
+                    entry.insert(0, display(data[key]))
+            window.info.set('已保存。生效时间取决于服务端模板重载机制。')
+            self.app.after_idle(lambda: self.load(refresh=True))
+
+        def failed(error):
+            if not window.winfo_exists():
+                return
+            finish()
+            window.info.set(str(error) if isinstance(error, (ConnectionFailure, QueryFailure, ValueError))
+                            else '保存失败，请关闭表单并重新读取确认状态。')
+
+        def save():
+            nonlocal saving
+            if saving or self.app.busy or not self.app.connected or original is None:
+                return
+            values = {key: entry.get() for key, entry in fields.items()}
+            if 'skill_id' in values:
+                text = values['skill_id'].strip()
+                values['skill_id'] = skill_values.get(text, text)
+            hide_skills()
+            saving = True
+            for entry in fields.values():
+                entry.configure(state='disabled')
+            save_button.configure(state='disabled')
+            close_button.configure(state='disabled')
+            window.info.set('正在保存…')
+            self.app.request(window, lambda: self.app.repository.save_item_template(original, values),
+                             saved, on_error=failed)
+
+        ttk.Label(actions, textvariable=window.info, wraplength=430).pack(side='left')
+        close_button = ttk.Button(actions, text='关闭', command=close)
+        close_button.pack(side='right')
+        save_button = ttk.Button(actions, text='保存', command=save,
+                                 state='normal' if original is not None else 'disabled')
+        save_button.pack(side='right', padx=8)
+        window.protocol('WM_DELETE_WINDOW', close)
 
     def show_detail(self, result, identity):
         if self.kind == 'item_templates':

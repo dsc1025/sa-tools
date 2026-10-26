@@ -90,6 +90,10 @@ ENCOUNTER_AREA_FIELDS.update({
 
 
 PAGE_SIZE = 50
+ITEM_TEMPLATE_RANGES = ('attacknum', 'attack', 'defence', 'quick', 'hp', 'mp',
+                        'luck', 'charm', 'avoid')
+ITEM_TEMPLATE_FIELDS = tuple(f'{key}_{bound}' for key in ITEM_TEMPLATE_RANGES
+                             for bound in ('min', 'max')) + ('damcrushe', 'maxdmce', 'skill_id')
 CHARACTER_STATS = (b'vi', b'str', b'tou', b'dx')
 CHARACTER_FIELDS = (
     ((b'name', '名称'), (b'lv', '等级'), (b'nexp', '经验'), (b'trn', '转生次数'),
@@ -970,8 +974,58 @@ class Repository:
             map_name = self.map_name(updated['floor'])
         return {'area': updated, 'map_name': map_name}
 
+    def item_skill_filter(self, template):
+        if display(template.get('usefunc')) == 'ITEM_useSkillCanned':
+            return PET_TEMPLATE_SKILL_FILTER
+        return PET_TEMPLATE_SKILL_FILTER + " AND (adapter!='magic' OR legacy_id<=65535)"
+
+    def save_item_template(self, original, values):
+        changes = {}
+        for key, text in values.items():
+            if key not in ITEM_TEMPLATE_FIELDS or key not in original:
+                raise ValueError('包含不可修改的道具基板字段。')
+            if text == display(original[key]):
+                continue
+            if text == 'NULL':
+                value = None
+            else:
+                if not re.fullmatch(r'-?[0-9]+', text):
+                    raise ValueError(f'{key} 必须为整数或 NULL。')
+                value = int(text)
+                if not -2147483648 <= value <= 2147483647:
+                    raise ValueError(f'{key} 超出32位整数范围。')
+                if key == 'skill_id' and not 0 <= value < 1073741824:
+                    raise ValueError('skill_id 必须在0到1073741823之间，或为 NULL。')
+            changes[key] = value
+        with self.connection.transaction():
+            rows = self.connection.query(
+                'SELECT * FROM item_templates WHERE id=%s LIMIT 1 FOR UPDATE', (original['id'],))
+            if not rows or rows[0] != original:
+                raise QueryFailure('道具基板已被其他操作修改，请关闭表单并重新打开。')
+            updated = {**rows[0], **changes}
+            if changes.get('skill_id', 0) is not None and changes.get('skill_id', 0) > 0:
+                skills = self.connection.query(
+                    'SELECT skill_id FROM skill_definitions WHERE skill_id=%s AND '
+                    + self.item_skill_filter(updated) + ' LIMIT 1 FOR UPDATE', (updated['skill_id'],))
+                if not skills:
+                    raise ValueError('请选择已启用且可用于此道具的统一技能编号。')
+            for key in ITEM_TEMPLATE_RANGES:
+                lower, upper = f'{key}_min', f'{key}_max'
+                if not {lower, upper} & changes.keys():
+                    continue
+                minimum, maximum = updated[lower], updated[upper]
+                if (minimum is None) != (maximum is None):
+                    raise ValueError(f'{lower} 和 {upper} 必须同时为 NULL 或同时为整数。')
+                if minimum is not None and (minimum > maximum or maximum - minimum >= 2147483647):
+                    raise ValueError(f'{key} 下限不能大于上限，且范围跨度必须小于2147483647。')
+            if changes:
+                assignments = ','.join(f'`{key}`=%s' for key in changes)
+                self.connection.write(f'UPDATE item_templates SET {assignments} WHERE id=%s',
+                                      (*changes.values(), original['id']))
+        return updated
+
     def detail(self, kind, identity):
-        if self.cache is not None and kind in CACHED_KINDS:
+        if self.cache is not None and kind in CACHED_KINDS and kind != 'item_templates':
             result = self.cache.result(kind, ['detail', repr(CATALOGS[kind]), identity],
                                        lambda: self.query_detail(kind, identity))
         else:
@@ -988,6 +1042,7 @@ class Repository:
 
     def query_detail(self, kind, identity):
         sections, links = [], []
+        skills = []
 
         def section(title, sql, parameters=(identity,), attributes=False, limit=1):
             rows = self.connection.query(sql + ' LIMIT %s', (*parameters, limit))
@@ -1049,7 +1104,11 @@ class Repository:
                                              ((value >> shift) & 255 for shift in (24, 16, 8, 0, 32))))], False))
             elif kind in ('pet_templates', 'item_templates'):
                 table, key = ('pet_base_templates', 'tempno') if kind == 'pet_templates' else ('item_templates', 'id')
-                section('模板字段', f'SELECT * FROM {table} WHERE {key}=%s')
+                rows = section('模板字段', f'SELECT * FROM {table} WHERE {key}=%s')
+                if kind == 'item_templates' and rows:
+                    skills = self.connection.query(
+                        'SELECT skill_id,name,adapter,function_registered FROM skill_definitions WHERE '
+                        + self.item_skill_filter(rows[0]) + ' ORDER BY skill_id')
             elif kind in ('enemy_templates', 'enemy_groups', 'encounter_areas', 'pet_capture_requirements'):
                 title, key = {
                     'enemy_templates': ('实例字段', 'id'),
@@ -1064,4 +1123,4 @@ class Repository:
             elif kind == 'skills':
                 section('技能字段', 'SELECT * FROM skill_definitions WHERE skill_id=%s')
                 section('配置引用', 'SELECT * FROM skill_references WHERE skill_id=%s ORDER BY source_type,source_key,slot', limit=10)
-        return {'sections': sections, 'links': links}
+        return {'sections': sections, 'links': links, 'skills': skills}
