@@ -567,6 +567,9 @@ class Repository:
             'FROM pet_base_templates p LEFT JOIN lite_pet_selection s ON s.tempno=p.tempno'
             + where + ' ORDER BY p.tempno', parameters)
 
+    def lite_pet_detail(self, identity):
+        return self.connection.query('SELECT tempno FROM lite_pet_selection WHERE tempno=%s', (identity,))
+
     def change_lite_pet_selection(self, identities, add):
         identities = sorted(set(identities))
         if not identities:
