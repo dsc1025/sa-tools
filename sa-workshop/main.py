@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, ttk
 
 from browser import Browser
+from lite_pet_page import LitePetPage
 from auction_page import AuctionPage
 from catalog import Repository, display
 from connection import Connection, ConnectionFailure, QueryFailure
@@ -125,6 +126,10 @@ class Workshop(tk.Tk):
             self.pet_pages.append(page)
             self.pages.append(page)
             self.pet_tabs.add(page, text=title)
+        page = LitePetPage(self.pet_tabs, self)
+        self.pet_pages.append(page)
+        self.pages.append(page)
+        self.pet_tabs.add(page, text='LITE')
         self.item_tabs = ttk.Notebook(body)
         body.add(self.item_tabs, text='道具')
         for title, kind in (('基板', 'item_templates'), ('黑市', 'black_shop_items')):

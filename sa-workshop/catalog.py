@@ -10,7 +10,7 @@ from cache import CACHED_KINDS, CatalogCache
 PET_TEMPLATE_FIELDS = {
     'name': ('宠物默认名称。', None, None),
     'initnum': ('初始能力计算倍率。', 0, 2147483647 // 265),
-    'lvuppoint': ('等级成长倍率，不是可分配点数。', 0, 2147483647 // 265),
+    'lvuppoint': ('lvuppoint 参数。', 0, 2147483647 // 265),
     'basevital': ('体力基础成长参数，0～255。', 0, 255),
     'basestr': ('腕力基础成长参数，0～255。', 0, 255),
     'basetgh': ('耐力基础成长参数，0～255。', 0, 255),
@@ -542,6 +542,87 @@ class Repository:
                                              (*parameters, PAGE_SIZE, page * PAGE_SIZE))
         return {'rows': rows, 'total': total, 'page': page}
 
+    def lite_pet_list(self, keyword, growth, selected_only):
+        keyword = keyword.strip()
+        if len(keyword) > 200:
+            raise ValueError('搜索内容最多200个字符。')
+        conditions, parameters = [], []
+        if keyword:
+            conditions.append('(LOCATE(%s,p.name)>0 OR CAST(p.tempno AS CHAR)=%s OR CAST(p.imgnumber AS CHAR)=%s)')
+            parameters.extend((keyword, keyword, keyword))
+        if growth.strip():
+            try:
+                value = int(growth)
+            except ValueError:
+                raise ValueError('lvuppoint 必须为整数。') from None
+            if not 0 <= value <= 2147483647:
+                raise ValueError('lvuppoint 超出范围。')
+            conditions.append('p.lvuppoint=%s')
+            parameters.append(value)
+        if selected_only:
+            conditions.append('s.tempno IS NOT NULL')
+        where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+        return self.connection.query(
+            'SELECT p.tempno,p.name,p.imgnumber,p.lvuppoint,(s.tempno IS NOT NULL) AS selected '
+            'FROM pet_base_templates p LEFT JOIN lite_pet_selection s ON s.tempno=p.tempno'
+            + where + ' ORDER BY p.tempno', parameters)
+
+    def change_lite_pet_selection(self, identities, add):
+        identities = sorted(set(identities))
+        if not identities:
+            raise ValueError('请先选择宠物基板。')
+        if not add:
+            placeholders = ','.join('%s' for _ in identities)
+            with self.connection.transaction():
+                self.connection.write('DELETE FROM lite_pet_selection WHERE tempno IN (' + placeholders + ')',
+                                      tuple(identities))
+            return
+        with self.connection.transaction():
+            bases = self.connection.query(
+                'SELECT tempno,imgnumber FROM pet_base_templates ORDER BY tempno FOR UPDATE')
+            by_id = {row['tempno']: row['imgnumber'] for row in bases}
+            if any(identity not in by_id for identity in identities):
+                raise ValueError('选中的基板已不存在，请刷新后重试。')
+            selected = self.connection.query('SELECT tempno FROM lite_pet_selection ORDER BY tempno FOR UPDATE')
+            existing = {row['tempno'] for row in selected}
+            if add:
+                images = {by_id[identity]: identity for identity in existing if identity in by_id}
+                for identity in identities:
+                    if identity in existing:
+                        continue
+                    image = by_id[identity]
+                    if image in images:
+                        raise ValueError(f'基板 #{identity} 与基板 #{images[image]} 的形象编号 {image} 重复，请选择其中一条。')
+                    images[image] = identity
+                for identity in identities:
+                    if identity not in existing:
+                        self.connection.write('INSERT INTO lite_pet_selection (tempno) VALUES (%s)', (identity,))
+
+    def sync_lite_pet_selection(self):
+        if self.cache is None:
+            raise QueryFailure('宠物基板缓存尚未配置，请重新连接数据库。')
+        with self.connection.transaction():
+            bases = self.cache.result(
+                'lite_pet_templates', ['all'],
+                lambda: self.connection.query(
+                    'SELECT tempno,imgnumber,lvuppoint FROM pet_base_templates ORDER BY tempno FOR UPDATE'),
+                refresh=True)
+            selected = self.connection.query('SELECT tempno FROM lite_pet_selection ORDER BY tempno FOR UPDATE')
+            existing = {row['tempno'] for row in selected}
+            images = {row['imgnumber'] for row in bases if row['tempno'] in existing}
+            counts = {}
+            for row in bases:
+                if row['lvuppoint'] == 4:
+                    image = row['imgnumber']
+                    counts[image] = counts.get(image, 0) + 1
+            identities = [row['tempno'] for row in bases
+                          if row['lvuppoint'] == 4 and counts[row['imgnumber']] == 1
+                          and row['imgnumber'] not in images]
+            if identities:
+                placeholders = ','.join('(%s)' for _ in identities)
+                self.connection.write('INSERT INTO lite_pet_selection (tempno) VALUES ' + placeholders,
+                                      tuple(identities))
+
     def template_enemies(self, identity):
         return self.connection.query(
             'SELECT id,name,lv_min,lv_max FROM enemy_templates WHERE tempno=%s ORDER BY id', (identity,))
@@ -731,7 +812,7 @@ class Repository:
                 multiplier = (max_level - 1) * int(updated['lvuppoint']) + int(updated['initnum'])
                 if (int(updated['initnum']) < 0 or int(updated['lvuppoint']) < 0
                         or multiplier > 2147483647 // 265):
-                    raise ValueError('初始能力与等级成长倍率过大，按实例生成等级计算会导致属性溢出。')
+                    raise ValueError('initnum 与 lvuppoint 过大，按实例生成等级计算会导致属性溢出。')
             for key, value in changes.items():
                 if key.startswith('pet_skill_id') and value is not None and value > 0:
                     skills = self.connection.query(
@@ -826,7 +907,7 @@ class Repository:
                     raise ValueError('关联基板不存在，无法校验生成等级。')
                 initial, growth = int(bases[0]['initnum']), int(bases[0]['lvuppoint'])
                 if initial < 0 or growth < 0 or (high - 1) * growth + initial > 2147483647 // 265:
-                    raise ValueError('等级过高，结合基板成长倍率会导致属性溢出。')
+                    raise ValueError('等级过高，结合基板 lvuppoint 会导致属性溢出。')
             if creating or {'createminnum', 'createmaxnum'} & changes.keys():
                 if not 0 <= int(updated['createminnum']) <= int(updated['createmaxnum']):
                     raise ValueError('最小生成数量不能大于最大生成数量，且不能为负数。')
