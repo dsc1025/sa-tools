@@ -578,8 +578,36 @@ class Repository:
             'FROM pet_base_templates p LEFT JOIN lite_pet_selection s ON s.tempno=p.tempno'
             + where + ' ORDER BY p.tempno', parameters)
 
-    def lite_pet_detail(self, identity):
-        return self.connection.query('SELECT tempno FROM lite_pet_selection WHERE tempno=%s', (identity,))
+    def lite_pet_detail(self, identity, locked=False):
+        return self.connection.query(
+            'SELECT tempno,tactics,exp,item1,itemprob1,tacticsoption FROM lite_pet_selection WHERE tempno=%s'
+            + (' FOR UPDATE' if locked else ''), (identity,))
+
+    def save_lite_pet(self, original, values):
+        updated = {}
+        for key in ('tactics', 'exp', 'item1', 'itemprob1'):
+            try:
+                value = int(values[key].strip())
+            except ValueError:
+                raise ValueError(f'{key} 必须为整数。') from None
+            lower = -1 if key == 'exp' else 0
+            if not lower <= value <= 2147483647:
+                raise ValueError(f'{key} 必须在 {lower}～2147483647 之间。')
+            if key == 'tactics' and value not in (0, 1):
+                raise ValueError('tactics 目前仅支持 0 或 1。')
+            updated[key] = value
+        option = values['tacticsoption'].strip()
+        if not option or len(option) > 255:
+            raise ValueError('tacticsoption 必须为 1～255 个字符。')
+        updated['tacticsoption'] = option
+        with self.connection.transaction():
+            rows = self.lite_pet_detail(original['tempno'], locked=True)
+            if not rows or rows[0] != original:
+                raise QueryFailure('LITE 配置已变化，请关闭表单并重新读取。')
+            assignments = ','.join(f'{key}=%s' for key in updated)
+            self.connection.write(f'UPDATE lite_pet_selection SET {assignments} WHERE tempno=%s',
+                                  (*updated.values(), original['tempno']))
+        return dict(tempno=original['tempno'], **updated)
 
     def change_lite_pet_selection(self, identities, add):
         identities = sorted(set(identities))

@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from catalog import display
-from connection import QueryFailure
+from connection import ConnectionFailure, QueryFailure
 
 
 class LitePetPage(ttk.Frame):
@@ -76,12 +76,70 @@ class LitePetPage(ttk.Frame):
             window = tk.Toplevel(self)
             window.title(f'LITE 详情 #{identity}')
             window.transient(self.app)
-            form = ttk.Frame(window, padding=16)
+            form = ttk.Frame(window, padding=12)
             form.pack(fill='both', expand=True)
-            ttk.Label(form, text='基板编号').grid(row=0, column=0, padx=(0, 12), pady=6)
-            value = tk.StringVar(value=str(rows[0]['tempno']))
-            ttk.Entry(form, textvariable=value, state='readonly').grid(row=0, column=1, pady=6)
-            ttk.Button(form, text='关闭', command=window.destroy).grid(row=1, column=1, sticky='e', pady=(12, 0))
+            form.columnconfigure(2, weight=1)
+            ttk.Label(form, text='tempno').grid(row=0, column=0, sticky='w', padx=(0, 12), pady=5)
+            window.tempno = tk.StringVar(value=display(rows[0]['tempno']))
+            ttk.Entry(form, textvariable=window.tempno, state='readonly', width=14).grid(
+                row=0, column=1, sticky='w', padx=(0, 12), pady=5)
+            fields = {}
+            keys = ('tactics', 'exp', 'item1', 'itemprob1', 'tacticsoption')
+            for row, key in enumerate(keys, 1):
+                ttk.Label(form, text=key).grid(row=row, column=0, sticky='w', padx=(0, 12), pady=5)
+                variable = tk.StringVar(value=display(rows[0][key]))
+                widget = ttk.Entry(form, textvariable=variable, width=56 if key == 'tacticsoption' else 14)
+                widget.grid(row=row, column=1, columnspan=2 if key == 'tacticsoption' else 1,
+                            sticky='w', padx=(0, 12), pady=5)
+                fields[key] = (variable, widget)
+            info = tk.StringVar()
+            ttk.Label(form, textvariable=info, wraplength=460).grid(
+                row=6, column=0, columnspan=3, sticky='w', pady=6)
+            buttons = ttk.Frame(form)
+            buttons.grid(row=7, column=0, columnspan=3, sticky='e', pady=(12, 0))
+            saving = False
+
+            def close():
+                if not saving:
+                    window.destroy()
+
+            def finish():
+                nonlocal saving
+                saving = False
+                for variable, widget in fields.values():
+                    widget.configure(state='normal')
+                save_button.configure(state='normal')
+                close_button.configure(state='normal')
+
+            def failed(error):
+                finish()
+                info.set(str(error) if isinstance(error, (ConnectionFailure, QueryFailure, ValueError))
+                         else '保存失败，请关闭表单并重新读取。')
+
+            def saved(result):
+                finish()
+                window.destroy()
+                self.app.after_idle(self.search)
+
+            def save():
+                nonlocal saving
+                if saving or self.app.busy or not self.app.connected:
+                    return
+                values = {key: variable.get() for key, (variable, widget) in fields.items()}
+                saving = True
+                for variable, widget in fields.values():
+                    widget.configure(state='disabled')
+                save_button.configure(state='disabled')
+                close_button.configure(state='disabled')
+                info.set('正在保存…')
+                self.app.request(self, lambda: self.app.repository.save_lite_pet(rows[0], values),
+                                 saved, on_error=failed)
+
+            save_button = ttk.Button(buttons, text='保存', command=save)
+            save_button.pack(side='left')
+            close_button = ttk.Button(buttons, text='关闭', command=close)
+            close_button.pack(side='left', padx=(8, 0))
+            window.protocol('WM_DELETE_WINDOW', close)
             self.app.center_window(window)
 
         self.app.request(self, lambda: self.app.repository.lite_pet_detail(int(identity)), show)
