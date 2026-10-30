@@ -813,7 +813,9 @@ class Browser(ttk.Frame):
                 if attributes:
                     lines.append(f"{display(row['field_key'])}：{display(row['field_value'])}")
                 else:
-                    lines.extend(f'{key}：{display(value)}' for key, value in row.items())
+                    lines.extend((f'闯关进度：{int(str(value)[:-4])}阶/{int(str(value)[-4:-2])}关'
+                                  if key == 'tower_progress' and str(value).isascii() and str(value).isdigit() and 5 <= len(str(value)) <= 12
+                                  else f'{key}：{display(value)}') for key, value in row.items())
                 lines.append('')
             lines.append('')
         window = tk.Toplevel(self)
@@ -847,7 +849,7 @@ class CharacterPanel(ttk.Frame):
         fields = (('name', '角色名称'), ('username', '账号'), ('level', '等级'),
                   ('gold', '金币'), ('bank_gold', '银行金币'), ('hp', '生命'),
                   ('map_id', '地图'), ('x', '坐标 X'), ('y', '坐标 Y'),
-                  ('revision', '存档版本'), ('saved_at', '存档时间'))
+                  ('tower_progress', '闯关进度'), ('revision', '存档版本'), ('saved_at', '存档时间'))
         for index, (key, label) in enumerate(fields):
             row, column = divmod(index, 2)
             value = tk.StringVar(value='—')
@@ -881,5 +883,9 @@ class CharacterPanel(ttk.Frame):
     def show_character(self, row):
         self.current = row
         for key, variable in self.fields.items():
-            variable.set(display(row.get(key)))
+            value = row.get(key)
+            if key == 'tower_progress' and isinstance(value, str) and value.isascii() and value.isdigit() and 5 <= len(value) <= 12:
+                variable.set(f'{int(value[:-4])}阶/{int(value[-4:-2])}关')
+            else:
+                variable.set(display(value))
         self.info.set('角色资料 · 只读')

@@ -62,8 +62,17 @@ class PlayerEditor(AccountEditor):
         self.points_value = None
         character = data['character']
         self.heading.set(f'角色：{display(character["name"])}')
+        tower_index = next((index + 1 for index, row in enumerate(data['attributes'])
+                            if row['field_key'] == b'trn'), len(data['attributes']))
+        self.tower_value = tk.StringVar(value=character['tower_progress'])
+        ttk.Label(self.form, text='闯关进度').grid(row=tower_index, column=0, sticky='w', padx=(0, 16), pady=5)
+        tower_entry = ttk.Entry(self.form, textvariable=self.tower_value, width=48)
+        tower_entry.grid(row=tower_index, column=1, sticky='ew')
+        self.entries.append((tower_entry, True))
         labels = dict(field for group in CHARACTER_FIELDS for field in group)
         for index, row in enumerate(data['attributes']):
+            if index >= tower_index:
+                index += 1
             ttk.Label(self.form, text=labels[row['field_key']]).grid(row=index, column=0, sticky='w', padx=(0, 16), pady=5)
             value = tk.StringVar(value=character_value(row))
             self.field_values[row['ordinal']] = value
@@ -101,7 +110,8 @@ class PlayerEditor(AccountEditor):
 
     def changed(self):
         rows = {row['ordinal']: row for row in self.original['attributes']}
-        return any(variable.get() != character_value(rows[ordinal]) for ordinal, variable in self.values.items())
+        return (self.tower_value.get() != self.original['character']['tower_progress'] or
+                any(variable.get() != character_value(rows[ordinal]) for ordinal, variable in self.values.items()))
 
     def begin(self):
         self.saving = True
@@ -114,7 +124,7 @@ class PlayerEditor(AccountEditor):
         self.saving = False
         for entry, editable in self.entries:
             entry.configure(state='normal' if editable else 'readonly')
-        self.save_button.configure(state='normal' if self.values else 'disabled')
+        self.save_button.configure(state='normal')
         self.close_button.configure(state='normal')
 
     def scroll(self, event):
@@ -130,9 +140,10 @@ class PlayerEditor(AccountEditor):
             return
         values = {ordinal: variable.get() for ordinal, variable in self.values.items()}
         original = self.original
+        tower_progress = self.tower_value.get()
         self.begin()
         self.info.set('正在保存…')
-        self.app.request(self, lambda: self.app.repository.save_player(original, values),
+        self.app.request(self, lambda: self.app.repository.save_player(original, values, tower_progress),
                          self.saved, on_error=self.failed)
 
     def saved(self, data):

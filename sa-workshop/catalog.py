@@ -251,9 +251,9 @@ CATALOGS = {
          ('created_at', '创建时间')), ('a.username',), True,
         filters=(('id', 'a.id'),)),
     'characters': Catalog(
-        'character_summary c JOIN accounts a ON a.id=c.account_id',
+        'character_summary c JOIN accounts a ON a.id=c.account_id JOIN characters t ON t.id=c.id',
         'c.id,c.account_id,a.username,c.name,c.slot,c.level,c.gold,c.bank_gold,c.hp,'
-        'c.map_id,c.x,c.y,c.revision,c.saved_at,'
+        'c.map_id,c.x,c.y,c.revision,c.saved_at,t.tower_progress,'
         "(SELECT numeric_value FROM character_attributes WHERE character_id=c.id AND field_key='memberpoint' ORDER BY ordinal LIMIT 1) AS memberpoint", 'c.id',
         (('name', '名称'), ('level', '等级'), ('memberpoint', '会员积分'), ('saved_at', '存档时间')),
         ('c.name', 'a.username'), True, filters=(('id', 'c.id'), ('account_id', 'c.account_id'))),
@@ -381,7 +381,7 @@ class Repository:
         suffix = ' FOR UPDATE' if locked else ''
         if kind == 'characters':
             rows = self.connection.query(
-                'SELECT id,account_id,slot,name,revision,saved_at FROM characters WHERE id=%s LIMIT 1' + suffix,
+                'SELECT id,account_id,slot,name,tower_progress,revision,saved_at FROM characters WHERE id=%s LIMIT 1' + suffix,
                 (identity,))
             if not rows:
                 raise QueryFailure('角色已不存在，请刷新列表。')
@@ -418,10 +418,15 @@ class Repository:
             return True
         return row['numeric_value'] is not None
 
-    def save_player(self, original, values):
+    def save_player(self, original, values, tower_progress=None):
         kind, identity = original['kind'], original['id']
         if kind != 'characters':
             raise ValueError('只有角色支持属性编辑。')
+        if tower_progress is None:
+            tower_progress = original['character']['tower_progress']
+        if not isinstance(tower_progress, str) or not re.fullmatch(r'[0-9]{1,8}(?:0[1-9]|10)10', tower_progress):
+            raise ValueError('闯关进度须为5～12位数字：1～8位阶层、两位关卡01～10、总关数10，例如00110。')
+        tower_changed = tower_progress != original['character']['tower_progress']
         labels = dict(field for group in CHARACTER_FIELDS for field in group)
         changes = []
         for row in original['attributes']:
@@ -464,7 +469,7 @@ class Repository:
                 if not -(1 << 31) <= numeric < (1 << 31):
                     raise ValueError(f'{labels[key]}超出服务器可保存的范围。')
             changes.append((row, value, numeric))
-        if not changes:
+        if not changes and not tower_changed:
             return original
         if any(row['field_key'] in CHARACTER_STATS for row, value, numeric in changes):
             points, remaining = character_points(original, values)
@@ -489,6 +494,9 @@ class Repository:
                 if kind == 'characters' and row['field_key'] == b'name':
                     self.connection.write('UPDATE characters SET name=%s WHERE id=%s',
                                           (display(value, escaped=True).encode('gbk'), identity))
+            if tower_changed:
+                self.connection.write('UPDATE characters SET tower_progress=%s WHERE id=%s',
+                                      (tower_progress, identity))
             self.connection.write('UPDATE characters SET revision=revision+1,saved_at=CURRENT_TIMESTAMP(6) WHERE id=%s',
                                   (original['character']['id'],))
             record = self.player_record(kind, identity)
@@ -1145,12 +1153,12 @@ class Repository:
             elif kind == 'accounts':
                 rows = section('账户', 'SELECT id,username,enabled,created_at FROM accounts WHERE id=%s')
                 section('权限', 'SELECT permission,level FROM account_permissions WHERE account_id=%s ORDER BY permission', limit=10)
-                section('角色', 'SELECT id,slot,name,revision,saved_at FROM characters WHERE account_id=%s ORDER BY slot', limit=10)
+                section('角色', 'SELECT id,slot,name,tower_progress,revision,saved_at FROM characters WHERE account_id=%s ORDER BY slot', limit=10)
                 if rows:
                     section('账号封禁', "SELECT reason,expires_at,created_at FROM login_bans WHERE subject_type='account' AND subject=%s ORDER BY created_at DESC", (rows[0]['username'],), limit=10)
                 links.append(('查看所属角色', 'characters', ('account_id', identity)))
             elif kind == 'characters':
-                rows = section('角色', 'SELECT c.id,c.account_id,a.username,c.slot,c.name,c.revision,c.saved_at '
+                rows = section('角色', 'SELECT c.id,c.account_id,a.username,c.slot,c.name,c.tower_progress,c.revision,c.saved_at '
                                'FROM characters c JOIN accounts a ON a.id=c.account_id WHERE c.id=%s')
                 section('属性', 'SELECT ordinal,field_key,field_value,numeric_value FROM character_attributes WHERE character_id=%s ORDER BY ordinal', attributes=True, limit=10)
                 section('已学旧角色技能', 'SELECT slot,skill_id,level AS stored_level,level DIV 100 AS display_level FROM character_skills WHERE character_id=%s ORDER BY slot', limit=10)
