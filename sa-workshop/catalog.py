@@ -424,8 +424,11 @@ class Repository:
             raise ValueError('只有角色支持属性编辑。')
         if tower_progress is None:
             tower_progress = original['character']['tower_progress']
-        if not isinstance(tower_progress, str) or not re.fullmatch(r'[0-9]{1,8}(?:0[1-9]|10)10', tower_progress):
-            raise ValueError('闯关进度须为5～12位数字：1～8位阶层、两位关卡01～10、总关数10，例如00110。')
+        if not isinstance(tower_progress, str) or not re.fullmatch(r'[0-9]{1,8}[0-9]{4}', tower_progress):
+            raise ValueError('闯关进度须为5～12位数字，例如00110。')
+        floor, stage, total = int(tower_progress[:-4]), int(tower_progress[-4:-2]), int(tower_progress[-2:])
+        if floor > 99 or total != (9 if floor == 99 else 10) or not 1 <= stage <= total:
+            raise ValueError('0～98阶须为01～10关、总关数10；99阶须为01～09关、总关数09。')
         tower_changed = tower_progress != original['character']['tower_progress']
         labels = dict(field for group in CHARACTER_FIELDS for field in group)
         changes = []
